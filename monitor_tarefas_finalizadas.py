@@ -80,63 +80,116 @@ class MonitorTarefasFinalizadas:
 
         cursor = conn.cursor()
 
-        # Data de referência (últimas 48h pra pegar tarefas novas) - DEFINE PRIMEIRO!
+        # Data de referência (últimas 48h)
         data_referencia = (datetime.now() - timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Lista os IDs que já estão sendo observados pra não duplicar
-        ids_ja_observados = [t['id'] for t in self.tarefas_em_observacao]
-
-        # Monta a query de forma inteligente dependendo se tem IDs ou não
-        if ids_ja_observados:
-            # Se tem IDs, usa eles na query
-            placeholders = ','.join(['%s'] * len(ids_ja_observados))
-            where_clause = f"AND T.id NOT IN ({placeholders})"
-            params = tuple(ids_ja_observados) + (data_referencia,)
-        else:
-            # Se não tem IDs, não coloca essa condição
-            where_clause = ""
-            params = (data_referencia,)
-
-        query = f"""
-        SELECT 
-            T.id as tarefa_id,
-            T.numero as numero_tarefa,
-            T.objetoorigemid as chamado_id,
-            T.status as status_atual,
-            T.criado as data_criacao,
-            C.numero as numero_chamado,
-            C.emergencial as emergencial,
-            C.nome as local
-        FROM dbo.tarefa T
-        INNER JOIN dbo.chamado C ON C.id = T.objetoorigemid
-        WHERE T.origem = 48                     -- Só tarefas que vieram de chamado
-        AND T.status IN (10, 25)                -- Abertas (10) ou Iniciadas (25)
-        AND T.estruturanivel2 IN ('44462 - SP - MAI - MERCEDES - SBC - MANUT')
-        {where_clause}                          -- Não pega as que já tão sendo observadas
-        AND T.criado > %s::timestamp            -- Só tarefas criadas recentemente
-        ORDER BY T.criado DESC
-        LIMIT 50                                -- Limita pra não sobrecarregar
-        """
+        # Query simples só das tarefas pendentes
+        query = """
+                SELECT T.id             as tarefa_id, \
+                       T.numero         as numero_tarefa, \
+                       T.objetoorigemid as chamado_id, \
+                       T.status         as status_atual, \
+                       T.criado         as data_criacao
+                FROM dbo.tarefa T
+                WHERE T.origem = 48
+                  AND T.status IN (10, 25)
+                  AND T.estruturanivel2 IN ('44462 - SP - MAI - MERCEDES - SBC - MANUT')
+                  AND T.criado > %s::timestamp
+                ORDER BY T.criado DESC
+                    LIMIT 50 \
+                """
 
         try:
-            cursor.execute(query, params)
-            novas_tarefas = cursor.fetchall()
-
-            colunas = [desc[0] for desc in cursor.description]
-            tarefas_dict = [dict(zip(colunas, linha)) for linha in novas_tarefas]
-
+            cursor.execute(query, (data_referencia,))
+            tarefas_raw = cursor.fetchall()
             cursor.close()
             conn.close()
 
-            return tarefas_dict
+            if not tarefas_raw:
+                return []
+
+            # Converte pra dict e filtra as já observadas
+            ids_ja_observados = {t['id'] for t in self.tarefas_em_observacao}
+            tarefas_novas = []
+
+            for t in tarefas_raw:
+                if t[0] not in ids_ja_observados:  # t[0] = tarefa_id
+                    tarefa_dict = {
+                        'tarefa_id': t[0],
+                        'numero_tarefa': t[1],
+                        'chamado_id': t[2],
+                        'status_atual': t[3],
+                        'data_criacao': t[4]
+                    }
+                    tarefas_novas.append(tarefa_dict)
+
+            # Se tem tarefas novas, busca dados dos chamados
+            if tarefas_novas:
+                ids_chamados = [t['chamado_id'] for t in tarefas_novas]
+                dados_chamados = self.buscar_dados_chamados_por_id(ids_chamados)
+                return self.mesclar_tarefas_com_chamados(tarefas_novas, dados_chamados)
+
+            return []
 
         except Exception as e:
-            print(f"Erro ao buscar novas tarefas: {e}")
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
+            print(f"Erro ao buscar tarefas: {e}")
             return []
+
+    def buscar_dados_chamados_por_id(self, ids_chamados):
+        """Query separada pros dados dos chamados"""
+        if not ids_chamados:
+            return {}
+
+        conn = self.conectar_bd()
+        if not conn:
+            return {}
+
+        cursor = conn.cursor()
+
+        placeholders = ','.join(['%s'] * len(ids_chamados))
+        query = f"""
+        SELECT 
+            C.id,
+            C.numero,
+            C.nome,
+            C.emergencial
+        FROM dbo.chamado C
+        WHERE C.id IN ({placeholders})
+        """
+
+        try:
+            cursor.execute(query, tuple(ids_chamados))
+            chamados_raw = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            # Retorna como dict indexado pelo ID
+            return {c[0]: {'numero_chamado': c[1], 'local': c[2], 'emergencial': c[3]} for c in chamados_raw}
+
+        except Exception as e:
+            print(f"Erro ao buscar chamados: {e}")
+            return {}
+
+    def mesclar_tarefas_com_chamados(self, tarefas, dados_chamados):
+        """Junta dados das duas queries"""
+        resultado = []
+
+        for tarefa in tarefas:
+            chamado_data = dados_chamados.get(tarefa['chamado_id'], {})
+
+            tarefa_completa = {
+                'tarefa_id': tarefa['tarefa_id'],
+                'numero_tarefa': tarefa['numero_tarefa'],
+                'status_atual': tarefa['status_atual'],
+                'data_criacao': tarefa['data_criacao'],
+                'numero_chamado': chamado_data.get('numero_chamado', 'N/A'),
+                'local': chamado_data.get('local', 'N/A'),
+                'emergencial': chamado_data.get('emergencial', False)
+            }
+
+            resultado.append(tarefa_completa)
+
+        return resultado
 
     def verificar_status_tarefas_observadas(self):
         """Verifica se alguma tarefa da lista mudou pra finalizada"""
@@ -149,10 +202,8 @@ class MonitorTarefasFinalizadas:
 
         cursor = conn.cursor()
 
-        # Pega os IDs das tarefas que estão sendo observadas
+        # Query simples só pra checar status
         ids_observados = [t['id'] for t in self.tarefas_em_observacao]
-
-        # Cria os placeholders corretamente pra UUIDs
         placeholders = ','.join(['%s'] * len(ids_observados))
 
         query = f"""
@@ -160,72 +211,89 @@ class MonitorTarefasFinalizadas:
             T.id as tarefa_id,
             T.numero as numero_tarefa,
             T.status as status_atual,
-            T.terminoreal as data_finalizacao,
-            T.inicioreal as data_inicio,
-            T.servicodescricao as tipo_servico,
-            E.rotulo as colaborador,
-            C.numero as numero_chamado,
-            C.emergencial as emergencial,
-            C.nome as local
+            T.terminoreal as data_finalizacao
         FROM dbo.tarefa T
-        INNER JOIN dbo.chamado C ON C.id = T.objetoorigemid
-        LEFT JOIN dbo.executor E ON E.tarefaid = T.id
         WHERE T.id IN ({placeholders})
         """
 
         try:
-            # Passa os UUIDs como parâmetros (o psycopg2 vai tratar eles direito)
             cursor.execute(query, tuple(ids_observados))
-            tarefas_atualizadas = cursor.fetchall()
-
-            colunas = [desc[0] for desc in cursor.description]
-            tarefas_dict = [dict(zip(colunas, linha)) for linha in tarefas_atualizadas]
-
+            tarefas_raw = cursor.fetchall()
             cursor.close()
             conn.close()
 
-            # Filtra só as que mudaram pra finalizada (status 85)
-            tarefas_finalizadas = []
+            # Separa finalizadas das pendentes
+            ids_finalizadas = []
             tarefas_ainda_pendentes = []
 
-            for tarefa in tarefas_dict:
-                if tarefa['status_atual'] == 85:
-                    # Finalizada
-                    tarefas_finalizadas.append(tarefa)
+            for t in tarefas_raw:
+                if t[2] == 85:  # status_atual == 85
+                    ids_finalizadas.append(t[0])  # tarefa_id
                 else:
-                    # Procura se já existia no JSON
-                    tarefa_existente = next(
-                        (t for t in self.tarefas_em_observacao if str(t['id']) == str(tarefa['tarefa_id'])), {}
-                    )
+                    # Mantém na observação
+                    tarefa_obs = {
+                        'id': str(t[0]),
+                        'numero_tarefa': t[1],
+                        'status': t[2]
+                    }
+                    tarefas_ainda_pendentes.append(tarefa_obs)
 
-                    # Atualiza mantendo campos extras
-                    tarefa_existente.update({
-                        'id': str(tarefa['tarefa_id']),
-                        'numero_tarefa': tarefa['numero_tarefa'],
-                        'numero_chamado': tarefa['numero_chamado'],
-                        'status': tarefa['status_atual']
-                    })
-
-                    tarefas_ainda_pendentes.append(tarefa_existente)
-
-            # Só substitui se realmente houver algo, senão mantém
-            if tarefas_ainda_pendentes:
-                self.tarefas_em_observacao = tarefas_ainda_pendentes
-
-            self.salvar_tarefas_em_observacao()
-
-            # Atualiza a lista de observação (remove as finalizadas)
+            # Atualiza lista de observação
             self.tarefas_em_observacao = tarefas_ainda_pendentes
             self.salvar_tarefas_em_observacao()
 
-            return tarefas_finalizadas
+            # Busca dados completos das finalizadas
+            if ids_finalizadas:
+                return self.buscar_dados_tarefa_finalizada_lista(ids_finalizadas)
+
+            return []
 
         except Exception as e:
             print(f"Erro ao verificar status: {e}")
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
+            return []
+
+    def buscar_dados_tarefa_finalizada_lista(self, ids_tarefas):
+        """Busca dados completos das tarefas finalizadas"""
+        conn = self.conectar_bd()
+        if not conn:
+            return []
+
+        cursor = conn.cursor()
+
+        placeholders = ','.join(['%s'] * len(ids_tarefas))
+        query = f"""
+        SELECT 
+            T.numero as numero_tarefa,
+            T.terminoreal as data_finalizacao,
+            C.numero as numero_chamado,
+            C.nome as local,
+            C.emergencial
+        FROM dbo.tarefa T
+        LEFT JOIN dbo.chamado C ON C.id = T.objetoorigemid
+        WHERE T.id IN ({placeholders})
+        """
+
+        try:
+            cursor.execute(query, tuple(ids_tarefas))
+            tarefas_raw = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            resultado = []
+            for t in tarefas_raw:
+                tarefa_dict = {
+                    'numero_tarefa': t[0],
+                    'data_finalizacao': t[1],
+                    'numero_chamado': t[3],
+                    'local': t[4],
+                    'emergencial': t[5]
+                }
+                resultado.append(tarefa_dict)
+
+            return resultado
+
+        except Exception as e:
+            print(f"Erro ao buscar dados finalizadas: {e}")
             return []
 
     def adicionar_novas_tarefas_observacao(self):
@@ -265,7 +333,6 @@ class MonitorTarefasFinalizadas:
             print("=" * 60)
             print(f"Chamado: {tarefa['numero_chamado']}")
             print(f"Tarefa: {tarefa['numero_tarefa']}")
-            print(f"Colaborador: {tarefa['colaborador']}")
             print(f"Finalizada em: {tarefa['data_finalizacao']}")
             print("=" * 60)
 

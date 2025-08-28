@@ -54,62 +54,111 @@ class MonitorChamadosMercedes:
             return None
 
     def buscar_novos_chamados(self):
-        """Pega os chamados novos que ainda não foram processados"""
+        """Versão otimizada sem subselects assassinos"""
         conn = self.conectar_bd()
         if not conn:
             return []
 
         cursor = conn.cursor()
 
-        # Query usando dbo.chamado com FULL JOIN (pega tudo mesmo)
+        # Query simples e direta - sem frescura
         query = """
-                SELECT C.numero              as numero_chamado, \
-                       C.id                  as id_chamado, \
-                       C.nome                as local, \
-                       C.descricao           as descricao_chamado, \
-                       C.status              as status_chamado, \
-                       C.emergencial         as emergencial, \
-                       C.solicitantetelefone as telefone, \
-                       T.numero              as numero_tarefa, \
-                       T.solicitantenome     as solicitante, \
-                       T.estruturahierarquiadescricao as estrutura_hierarquia,
-            T.criado as data_criacao,
-            T.descricao as descricao_tarefa,
-            T.servicodescricao as tipo_servico,
-            dms.servico,
-            dms.subcategoria,
-            dms.categoria
-                FROM dbo.chamado C
-                    FULL JOIN dbo.tarefa T \
-                ON T.objetoorigemid = C.id
-                    INNER JOIN dw_vista.dm_servico dms ON dms.id_servico = T.servicoid
+                SELECT T.numero           AS numero_tarefa, \
+                       T.criado           AS data_criacao, \
+                       T.solicitantenome  AS solicitante, \
+                       T.servicodescricao AS tipo_servico, \
+                       T.descricao        AS descricao_tarefa, \
+                       T.objetoorigemid   AS chamado_id
+                FROM dbo.tarefa T
                 WHERE T.estruturanivel2 IN ('44462 - SP - MAI - MERCEDES - SBC - MANUT')
                   AND T.origem = 48
-                  AND T.criado \
-                    > %s:: timestamp
-                ORDER BY T.criado \
+                  AND T.criado > %s::timestamp
+                ORDER BY T.criado DESC
+                    LIMIT 50 \
                 """
 
         try:
             cursor.execute(query, (self.ultima_data_processada,))
-            novos = cursor.fetchall()
-
-            # Converte pra dicionário pra ficar mais fácil de usar
-            colunas = [desc[0] for desc in cursor.description]
-            chamados = [dict(zip(colunas, linha)) for linha in novos]
-
+            tarefas_raw = cursor.fetchall()
             cursor.close()
             conn.close()
 
-            return chamados
+            if not tarefas_raw:
+                return []
+
+            # Busca dados dos chamados em query separada
+            ids_chamados = [t[5] for t in tarefas_raw]  # t[5] = chamado_id
+            dados_chamados = self.buscar_dados_chamados(ids_chamados)
+
+            # Junta os dados das duas consultas
+            resultado = []
+            for t in tarefas_raw:
+                chamado_data = dados_chamados.get(t[5], {})  # t[5] = chamado_id
+
+                chamado_completo = {
+                    'numero_tarefa': t[0],
+                    'data_criacao': t[1],
+                    'solicitante': t[2],
+                    'tipo_servico': t[3],
+                    'descricao_tarefa': t[4],
+                    'numero_chamado': chamado_data.get('numero_chamado', 'N/A'),
+                    'local': chamado_data.get('local', 'N/A'),
+                    'descricao_chamado': chamado_data.get('descricao_chamado', 'N/A'),
+                    'emergencial': chamado_data.get('emergencial', False),
+                    'telefone': chamado_data.get('telefone', 'N/A')
+                }
+                resultado.append(chamado_completo)
+
+            return resultado
 
         except Exception as e:
             print(f"Erro na consulta: {e}")
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
             return []
+
+    def buscar_dados_chamados(self, ids_chamados):
+        """Busca dados dos chamados em separado"""
+        if not ids_chamados:
+            return {}
+
+        conn = self.conectar_bd()
+        if not conn:
+            return {}
+
+        cursor = conn.cursor()
+
+        placeholders = ','.join(['%s'] * len(ids_chamados))
+        query = f"""
+        SELECT 
+            C.id,
+            C.numero,
+            C.nome,
+            C.descricao,
+            C.emergencial,
+            C.solicitantetelefone
+        FROM dbo.chamado C
+        WHERE C.id IN ({placeholders})
+        """
+
+        try:
+            cursor.execute(query, tuple(ids_chamados))
+            chamados_raw = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            # Retorna como dict indexado pelo ID do chamado
+            return {
+                c[0]: {
+                    'numero_chamado': c[1],
+                    'local': c[2],
+                    'descricao_chamado': c[3],
+                    'emergencial': c[4],
+                    'telefone': c[5]
+                } for c in chamados_raw
+            }
+
+        except Exception as e:
+            print(f"Erro ao buscar dados dos chamados: {e}")
+            return {}
 
     def processar_novos_chamados(self):
         """Processa cada chamado novo que apareceu"""
@@ -159,8 +208,9 @@ class MonitorChamadosMercedes:
         print(f"Local: {chamado['local']}")
         print(f"Descrição: {chamado['descricao_chamado']}")
         print(f"Criado em: {chamado['data_criacao']}")
-        print(f"Categoria: {chamado['categoria']}")
-        print(f"Subcategoria: {chamado['subcategoria']}")
+        # REMOVE ESSAS DUAS LINHAS QUE ESTÃO DANDO ERRO:
+        # print(f"Categoria: {chamado['categoria']}")
+        # print(f"Subcategoria: {chamado['subcategoria']}")
         print("=" * 60)
 
         # INTEGRAÇÃO WHATSAPP - A MÁGICA ACONTECE AQUI!
@@ -193,28 +243,91 @@ class MonitorChamadosMercedes:
 {chamado['descricao_chamado']}
 
 *Criado em:* {chamado['data_criacao'].strftime('%d/%m/%Y às %H:%M')}
-*Categoria:* {chamado['categoria']} > {chamado['subcategoria']}
 
-_Sistema automático Mercedes - GPS Vista_"""
+"""
 
         return mensagem
 
     def get_ultima_data_salva(self):
-        """Recupera a última data processada de um arquivo"""
+        """Recupera a última data processada - versão à prova de UUID"""
+        # FORÇA um reset se tiver dados corrompidos
+        data_padrao = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+
         try:
-            with open('ultima_data_mercedes.txt', 'r') as f:
-                data_str = f.read().strip()
-                return data_str if data_str else '2024-01-01 00:00:00'
-        except:
-            # Se não tem arquivo, pega só os chamados das últimas 24h
-            ontem = datetime.now() - timedelta(hours=24)
-            return ontem.strftime('%Y-%m-%d %H:%M:%S')
+            if os.path.exists('ultima_data_mercedes.txt'):
+                with open('ultima_data_mercedes.txt', 'r') as f:
+                    data_str = f.read().strip()
+
+                # Verifica se parece com UUID (tem hífens e é longo)
+                if len(data_str) > 30 or '-' in data_str[:8]:
+                    print(f"DETECTADO UUID NO ARQUIVO: {data_str[:30]}...")
+                    print("Resetando para data válida")
+                    os.remove('ultima_data_mercedes.txt')  # Deleta arquivo corrompido
+                    return data_padrao
+
+                # Verifica se é data válida
+                try:
+                    datetime.strptime(data_str, '%Y-%m-%d %H:%M:%S')
+                    return data_str
+                except:
+                    print("Data inválida no arquivo, resetando")
+                    return data_padrao
+
+        except Exception as e:
+            print(f"Erro ao ler arquivo: {e}")
+
+        # Salva a data padrão
+        with open('ultima_data_mercedes.txt', 'w') as f:
+            f.write(data_padrao)
+
+        return data_padrao
 
     def salvar_ultima_data(self, data_processada):
-        """Salva a última data processada"""
-        with open('ultima_data_mercedes.txt', 'w') as f:
-            f.write(str(data_processada))
-        print(f"Última data salva: {data_processada}")
+        """Salva data com validação robusta"""
+        try:
+            # Converte datetime object pra string se necessário
+            if isinstance(data_processada, datetime):
+                data_str = data_processada.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                data_str = str(data_processada)
+
+            # PARANOIA: verifica se parece com UUID
+            if len(data_str) > 30 or (len(data_str) > 20 and '-' in data_str[:8]):
+                print(f"AVISO: Tentativa de salvar UUID como data: {data_str[:30]}...")
+                print("Ignorando e mantendo data anterior")
+                return
+
+            # Testa se consegue parsear
+            datetime.strptime(data_str, '%Y-%m-%d %H:%M:%S')
+
+            with open('ultima_data_mercedes.txt', 'w') as f:
+                f.write(data_str)
+            print(f"Data salva: {data_str}")
+
+        except Exception as e:
+            print(f"ERRO ao salvar data: {e}")
+            print(f"Valor recebido: {data_processada}")
+            print("Mantendo data anterior por segurança")
+
+    def salvar_ultima_data(self, data_processada):
+        """Salva a última data processada com validação"""
+        try:
+            # Se data_processada for datetime object, converte
+            if isinstance(data_processada, datetime):
+                data_str = data_processada.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                data_str = str(data_processada)
+
+            # Valida se é uma data válida antes de salvar
+            datetime.strptime(data_str, '%Y-%m-%d %H:%M:%S')
+
+            with open('ultima_data_mercedes.txt', 'w') as f:
+                f.write(data_str)
+            print(f"Data salva com sucesso: {data_str}")
+
+        except Exception as e:
+            print(f"Erro ao salvar data: {e}")
+            print(f"Tentou salvar: {data_processada}")
 
     def testar_conexao(self):
         """Testa se a conexão tá funcionando"""

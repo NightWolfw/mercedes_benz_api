@@ -177,7 +177,6 @@ Criado em: {data_formatada}"""
 Chamado: {tarefa.get('numero_chamado', 'N/A')}
 Tarefa: {tarefa.get('numero_tarefa', 'N/A')}
 Local: {tarefa.get('local', 'N/A')}  
-Colaborador: {tarefa.get('colaborador', 'N/A')}
 Finalizado em: {self.formatar_data(tarefa.get('data_finalizacao'))}
 
 Trabalho concluído com sucesso!!! """
