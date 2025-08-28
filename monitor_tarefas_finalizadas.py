@@ -105,18 +105,19 @@ class MonitorTarefasFinalizadas:
             T.status as status_atual,
             T.criado as data_criacao,
             C.numero as numero_chamado,
-            C.emergencial as emergencial,
-            C.nome as local
-        FROM dbo.tarefa T
-        INNER JOIN dbo.chamado C ON C.id = T.objetoorigemid
-        WHERE T.origem = 48                     -- Só tarefas que vieram de chamado
+          C.emergencial as emergencial,
+          C.nome as local
+      FROM dbo.tarefa T
+      , dbo.chamado C
+      WHERE C.id = T.objetoorigemid
+        AND T.origem = 48                     -- Só tarefas que vieram de chamado
         AND T.status IN (10, 25)                -- Abertas (10) ou Iniciadas (25)
         AND T.estruturanivel2 IN ('44462 - SP - MAI - MERCEDES - SBC - MANUT')
         {where_clause}                          -- Não pega as que já tão sendo observadas
         AND T.criado > %s::timestamp            -- Só tarefas criadas recentemente
-        ORDER BY T.criado DESC
-        LIMIT 50                                -- Limita pra não sobrecarregar
-        """
+      ORDER BY T.criado DESC
+      LIMIT 50                                -- Limita pra não sobrecarregar
+      """
 
         try:
             cursor.execute(query, params)
@@ -162,16 +163,17 @@ class MonitorTarefasFinalizadas:
             T.status as status_atual,
             T.terminoreal as data_finalizacao,
             T.inicioreal as data_inicio,
-            T.servicodescricao as tipo_servico,
-            E.rotulo as colaborador,
-            C.numero as numero_chamado,
-            C.emergencial as emergencial,
-            C.nome as local
-        FROM dbo.tarefa T
-        INNER JOIN dbo.chamado C ON C.id = T.objetoorigemid
-        LEFT JOIN dbo.executor E ON E.tarefaid = T.id
-        WHERE T.id IN ({placeholders})
-        """
+              T.servicodescricao as tipo_servico,
+              E.rotulo as colaborador,
+              C.numero as numero_chamado,
+              C.emergencial as emergencial,
+              C.nome as local
+          FROM dbo.tarefa T
+          LEFT JOIN dbo.executor E ON E.tarefaid = T.id,
+          dbo.chamado C
+          WHERE C.id = T.objetoorigemid
+            AND T.id IN ({placeholders})
+          """
 
         try:
             # Passa os UUIDs como parâmetros (o psycopg2 vai tratar eles direito)
