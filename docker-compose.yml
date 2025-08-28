@@ -1,0 +1,9 @@
+services:
+  mercedes-monitor:
+    build: .
+    container_name: mercedes-monitor
+    # Monta sua pasta local dentro do container -> tudo persiste (JSONs, etc.)
+    volumes:
+      - ./:/app
+    # Reinicia sempre que cair / reinicia com o Windows
+    restart: always
