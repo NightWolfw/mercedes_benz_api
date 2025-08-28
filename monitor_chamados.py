@@ -81,9 +81,10 @@ class MonitorChamadosMercedes:
             dms.categoria
                 FROM dbo.chamado C
                     FULL JOIN dbo.tarefa T \
-                ON T.objetoorigemid = C.id
-                    INNER JOIN dw_vista.dm_servico dms ON dms.id_servico = T.servicoid
-                WHERE T.estruturanivel2 IN ('44462 - SP - MAI - MERCEDES - SBC - MANUT')
+                ON T.objetoorigemid = C.id,
+                    dw_vista.dm_servico dms
+                WHERE dms.id_servico = T.servicoid
+                  AND T.estruturanivel2 IN ('44462 - SP - MAI - MERCEDES - SBC - MANUT')
                   AND T.origem = 48
                   AND T.criado \
                     > %s:: timestamp
