@@ -180,8 +180,8 @@ Criado em: {data_formatada}"""
             realizador_linha = "Realizada por: Sistema/Automático"
 
         # Pega as informações extras das execuções
-        status_maquina = tarefa.get('status_maquina', '').strip()
-        descricao_atividade = tarefa.get('descricao_atividade', '').strip()
+        status_maquina = tarefa.get('status_maquina', '')
+        descricao_atividade = tarefa.get('descricao_atividade', '')
 
         # Monta a mensagem básica
         mensagem = f"""{emergencial_emoji}✅ TAREFA CONCLUÍDA - MERCEDES SBC
@@ -192,12 +192,12 @@ Local: {tarefa.get('local', 'N/A')}
 {realizador_linha}"""
 
         # Adiciona status da máquina se tiver
-        if status_maquina:
-            mensagem += f"\nStatus da máquina: *{status_maquina}*"
+        if status_maquina and status_maquina.strip():
+            mensagem += f"\nStatus da máquina: *{status_maquina.strip()}*"
 
         # Adiciona descrição da atividade se tiver
-        if descricao_atividade:
-            mensagem += f"\nAtividade realizada: *{descricao_atividade}*"
+        if descricao_atividade and descricao_atividade.strip():
+            mensagem += f"\nAtividade realizada: *{descricao_atividade.strip()}*"
 
         # Finaliza
         mensagem += f"\nFinalizado em: {self.formatar_data(tarefa.get('data_finalizacao'))}\n\nTrabalho concluído com sucesso!!! 🎉"

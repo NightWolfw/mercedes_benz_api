@@ -44,14 +44,37 @@ class MonitorChamadosMercedes:
         self.salvar_chamados_enviados()
         print(f"Chamado {numero_chamado} marcado como enviado")
 
-    def conectar_bd(self):
-        """Conecta no PostgreSQL da Mercedes"""
-        try:
-            conn = psycopg2.connect(**self.db_config)
-            return conn
-        except Exception as e:
-            print(f"Deu ruim na conexão: {e}")
-            return None
+    def conectar_bd(self, tentativas_maximas=3):
+        """Conecta no PostgreSQL da Mercedes - VERSÃO ULTRA RESILIENTE"""
+        for tentativa in range(tentativas_maximas):
+            try:
+                print(f"Tentativa de conexão #{tentativa + 1}...")
+
+                conn = psycopg2.connect(
+                    host=self.db_config['host'],
+                    database=self.db_config['database'],
+                    user=self.db_config['user'],
+                    password=self.db_config['password'],
+                    port=self.db_config['port'],
+                    connect_timeout=30,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=5,
+                    keepalives_count=5,
+                    sslmode='prefer'
+                )
+                print("✅ Conexão estabelecida com sucesso!")
+                return conn
+
+            except Exception as e:
+                print(f"❌ Tentativa #{tentativa + 1} falhou: {e}")
+
+                if tentativa < tentativas_maximas - 1:
+                    tempo_espera = (tentativa + 1) * 10
+                    print(f"Aguardando {tempo_espera}s antes da próxima tentativa...")
+                    time.sleep(tempo_espera)
+
+        return None
 
     def buscar_novos_chamados(self):
         """Versão otimizada sem subselects assassinos"""
@@ -344,29 +367,37 @@ class MonitorChamadosMercedes:
         return False
 
     def rodar_monitor(self):
-        """Loop principal que fica rodando forever"""
+        """Loop principal - VERSÃO INDESTRUTÍVEL"""
         print("MONITOR MERCEDES INICIANDO...")
         print(f"Servidor: {self.db_config['host']}")
         print(f"Database: {self.db_config['database']}")
-        print(f"Usuário: {self.db_config['user']}")
-
-        # Testa conexão primeiro
-        if not self.testar_conexao():
-            print("Não conseguiu conectar. Verifica usuário/senha!")
-            return
-
-        print("Tudo certo! Monitor rodando...")
-        print("Para parar: Ctrl+C")
+        print(f"MODO RESILIENTE ATIVO!")
         print("-" * 50)
 
         contador_ciclos = 0
+        erros_consecutivos = 0
 
         while True:
             try:
                 contador_ciclos += 1
                 print(f"Ciclo #{contador_ciclos} - {datetime.now().strftime('%H:%M:%S')}")
 
-                self.processar_novos_chamados()
+                # Testa conexão antes de processar
+                if not self.testar_conexao_rapida():
+                    print("🚨 Banco indisponível, aguardando...")
+                    erros_consecutivos += 1
+                    tempo_espera = min(60 * erros_consecutivos, 300)  # Max 5 min
+                    print(f"Tentando novamente em {tempo_espera}s...")
+                    time.sleep(tempo_espera)
+                    continue
+
+                # Reseta contador se conectou
+                erros_consecutivos = 0
+
+                try:
+                    self.processar_novos_chamados()
+                except Exception as e:
+                    print(f"Erro ao processar chamados: {e}")
 
                 print("Dormindo 120 segundos...")
                 time.sleep(120)
@@ -377,8 +408,21 @@ class MonitorChamadosMercedes:
 
             except Exception as e:
                 print(f"Erro inesperado: {e}")
-                print("Tentando novamente em 60 segundos...")
-                time.sleep(60)
+                erros_consecutivos += 1
+                tempo_espera = min(60 * erros_consecutivos, 300)
+                print(f"Tentando novamente em {tempo_espera}s...")
+                time.sleep(tempo_espera)
+
+    def testar_conexao_rapida(self):
+        """Teste rápido sem travar"""
+        try:
+            conn = self.conectar_bd(tentativas_maximas=1)
+            if conn:
+                conn.close()
+                return True
+            return False
+        except:
+            return False
 
 
 # Como usar:

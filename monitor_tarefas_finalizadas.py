@@ -63,14 +63,40 @@ class MonitorTarefasFinalizadas:
         except Exception as e:
             print(f"Erro ao salvar lista de enviadas: {e}")
 
-    def conectar_bd(self):
-        """Conecta no PostgreSQL da Mercedes"""
-        try:
-            conn = psycopg2.connect(**self.db_config)
-            return conn
-        except Exception as e:
-            print(f"Erro na conexão: {e}")
-            return None
+    def conectar_bd(self, tentativas_maximas=3):
+        """Conecta no PostgreSQL da Mercedes - VERSÃO ULTRA RESILIENTE"""
+        for tentativa in range(tentativas_maximas):
+            try:
+                print(f"Tentativa de conexão #{tentativa + 1}...")
+
+                # Configurações extras pra resolver o erro de EOF/SSL
+                conn = psycopg2.connect(
+                    host=self.db_config['host'],
+                    database=self.db_config['database'],
+                    user=self.db_config['user'],
+                    password=self.db_config['password'],
+                    port=self.db_config['port'],
+                    connect_timeout=30,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=5,
+                    keepalives_count=5,
+                    sslmode='prefer'
+                )
+                print("✅ Conexão estabelecida com sucesso!")
+                return conn
+
+            except Exception as e:
+                print(f"❌ Tentativa #{tentativa + 1} falhou: {e}")
+
+                if tentativa < tentativas_maximas - 1:
+                    tempo_espera = (tentativa + 1) * 10  # 10s, 20s, 30s...
+                    print(f"Aguardando {tempo_espera}s antes da próxima tentativa...")
+                    time.sleep(tempo_espera)
+                else:
+                    print("🚨 Todas as tentativas falharam!")
+
+        return None
 
     def buscar_novas_tarefas_pendentes(self):
         """Pega tarefas novas que vieram de chamado e ainda não estão finalizadas"""
@@ -319,7 +345,7 @@ class MonitorTarefasFinalizadas:
             return []
 
     def buscar_execucoes_das_tarefas(self, cursor, ids_tarefas):
-        """Busca só as execuções que interessam - CONSULTA LEVE!"""
+        """Busca só as execuções que interessam - VERSÃO OTIMIZADA!"""
         if not ids_tarefas:
             return {}
 
@@ -362,8 +388,6 @@ class MonitorTarefasFinalizadas:
         except Exception as e:
             print(f"Erro ao buscar execuções: {e}")
             return {}
-
-        placeholders = ','.join(['%s'] * len(ids_tarefas))
 
     def adicionar_novas_tarefas_observacao(self):
         """Adiciona novas tarefas na lista de observação"""
@@ -424,29 +448,57 @@ class MonitorTarefasFinalizadas:
             print("=" * 60)
 
     def rodar_monitor(self):
-        """Loop principal - lógica inteligente de observação"""
+        """Loop principal - VERSÃO INDESTRUTÍVEL"""
         print("MONITOR INTELIGENTE DE TAREFAS INICIANDO...")
         print("Lógica: Observa tarefas pendentes até elas serem finalizadas")
+        print("MODO RESILIENTE: Não para nem se o banco cair!")
         print("-" * 50)
 
         contador_ciclos = 0
+        erros_consecutivos = 0
+        MAX_ERROS_CONSECUTIVOS = 5
 
         while True:
             try:
                 contador_ciclos += 1
                 print(f"Ciclo #{contador_ciclos} - {datetime.now().strftime('%H:%M:%S')}")
 
+                # Testa conexão antes de fazer qualquer coisa
+                if not self.testar_conexao_rapida():
+                    print("🚨 Banco indisponível, aguardando...")
+                    erros_consecutivos += 1
+
+                    if erros_consecutivos >= MAX_ERROS_CONSECUTIVOS:
+                        tempo_espera = 300  # 5 minutos se muitos erros
+                        print(f"Muitos erros consecutivos ({erros_consecutivos}). Dormindo {tempo_espera}s...")
+                    else:
+                        tempo_espera = 60  # 1 minuto normal
+                        print(f"Erro #{erros_consecutivos}. Tentando novamente em {tempo_espera}s...")
+
+                    time.sleep(tempo_espera)
+                    continue
+
+                # Se chegou aqui, conexão tá OK - reseta contador de erros
+                erros_consecutivos = 0
+
                 # Etapa 1: Adiciona novas tarefas na lista de observação
-                self.adicionar_novas_tarefas_observacao()
+                try:
+                    self.adicionar_novas_tarefas_observacao()
+                except Exception as e:
+                    print(f"Erro ao adicionar tarefas: {e}")
 
                 # Etapa 2: Verifica se alguma tarefa observada foi finalizada
-                tarefas_finalizadas = self.verificar_status_tarefas_observadas()
+                try:
+                    tarefas_finalizadas = self.verificar_status_tarefas_observadas()
 
-                if tarefas_finalizadas:
-                    print(f"ATENÇÃO: {len(tarefas_finalizadas)} tarefa(s) foram finalizadas!")
-                    self.processar_tarefas_finalizadas(tarefas_finalizadas)
-                else:
-                    print(f"Observando {len(self.tarefas_em_observacao)} tarefa(s) pendente(s)...")
+                    if tarefas_finalizadas:
+                        print(f"ATENÇÃO: {len(tarefas_finalizadas)} tarefa(s) foram finalizadas!")
+                        self.processar_tarefas_finalizadas(tarefas_finalizadas)
+                    else:
+                        print(f"Observando {len(self.tarefas_em_observacao)} tarefa(s) pendente(s)...")
+
+                except Exception as e:
+                    print(f"Erro ao verificar tarefas: {e}")
 
                 print("Dormindo 120 segundos...")
                 time.sleep(120)
@@ -457,9 +509,21 @@ class MonitorTarefasFinalizadas:
 
             except Exception as e:
                 print(f"Erro inesperado: {e}")
-                print("Tentando novamente em 60 segundos...")
-                time.sleep(60)
+                erros_consecutivos += 1
+                tempo_espera = min(60 * erros_consecutivos, 300)  # Max 5 min
+                print(f"Tentando novamente em {tempo_espera}s...")
+                time.sleep(tempo_espera)
 
+    def testar_conexao_rapida(self):
+        """Teste rápido de conexão sem travar a thread"""
+        try:
+            conn = self.conectar_bd(tentativas_maximas=1)
+            if conn:
+                conn.close()
+                return True
+            return False
+        except:
+            return False
 
 # Como usar:
 if __name__ == "__main__":
