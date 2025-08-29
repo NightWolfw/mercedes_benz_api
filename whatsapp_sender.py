@@ -167,21 +167,30 @@ Criado em: {data_formatada}"""
         return self.enviar_mensagem(mensagem)
 
     def formatar_mensagem_tarefa_finalizada(self, tarefa):
-        """Formata mensagem de conclusão"""
+        """Formata mensagem de conclusão - AGORA COM QUEM REALIZOU!"""
         print("DEBUG tarefa finalizada:", tarefa)
 
         emergencial_emoji = "🚨 " if tarefa.get('emergencial') else ""
+        realizador = tarefa.get('realizador_nome', 'Não informado')
+
+        # Se tem o nome do realizador, coloca em destaque
+        if realizador and realizador != 'Não informado':
+            realizador_linha = f"Realizada por: *{realizador}*"
+        else:
+            realizador_linha = "Realizada por: Sistema/Automático"
 
         mensagem = f"""{emergencial_emoji}✅ TAREFA CONCLUÍDA - MERCEDES SBC
 
 Chamado: {tarefa.get('numero_chamado', 'N/A')}
 Tarefa: {tarefa.get('numero_tarefa', 'N/A')}
 Local: {tarefa.get('local', 'N/A')}  
+{realizador_linha}
 Finalizado em: {self.formatar_data(tarefa.get('data_finalizacao'))}
 
-Trabalho concluído com sucesso!!! """
+Trabalho concluído com sucesso!!! 🎉"""
 
         return mensagem
+
 
 # Exemplo de como usar:
 if __name__ == "__main__":
@@ -200,10 +209,25 @@ if __name__ == "__main__":
         'subcategoria': 'Equipamentos'
     }
 
-    # Testa o formato da mensagem
-    print("FORMATO DA MENSAGEM:")
+    # Exemplo de tarefa finalizada pra testar
+    tarefa_exemplo = {
+        'numero_chamado': '12345',
+        'numero_tarefa': '67890',
+        'local': 'Galpão A - Setor 2',
+        'realizador_nome': 'José da Silva',
+        'data_finalizacao': datetime.now(),
+        'emergencial': False
+    }
+
+    # Testa o formato das mensagens
+    print("FORMATO CHAMADO:")
     print("=" * 50)
     print(whatsapp.formatar_mensagem_chamado(chamado_exemplo))
+    print("=" * 50)
+
+    print("\nFORMATO TAREFA FINALIZADA:")
+    print("=" * 50)
+    print(whatsapp.formatar_mensagem_tarefa_finalizada(tarefa_exemplo))
     print("=" * 50)
 
     # Para testar de verdade:

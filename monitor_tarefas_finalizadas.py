@@ -253,7 +253,7 @@ class MonitorTarefasFinalizadas:
             return []
 
     def buscar_dados_tarefa_finalizada_lista(self, ids_tarefas):
-        """Busca dados completos das tarefas finalizadas"""
+        """Busca dados completos das tarefas finalizadas - AGORA COM QUEM REALIZOU!"""
         conn = self.conectar_bd()
         if not conn:
             return []
@@ -261,15 +261,19 @@ class MonitorTarefasFinalizadas:
         cursor = conn.cursor()
 
         placeholders = ','.join(['%s'] * len(ids_tarefas))
+
+        # AQUI ESTÁ A MÁGICA! Adicionei o JOIN com dbo.recurso
         query = f"""
         SELECT 
             T.numero as numero_tarefa,
             T.terminoreal as data_finalizacao,
             C.numero as numero_chamado,
             C.nome as local,
-            C.emergencial
+            C.emergencial,
+            R.nome as realizador_nome
         FROM dbo.tarefa T
         LEFT JOIN dbo.chamado C ON C.id = T.objetoorigemid
+        LEFT JOIN dbo.recurso R ON R.codigohash = T.finalizadoporhash
         WHERE T.id IN ({placeholders})
         """
 
@@ -284,9 +288,10 @@ class MonitorTarefasFinalizadas:
                 tarefa_dict = {
                     'numero_tarefa': t[0],
                     'data_finalizacao': t[1],
-                    'numero_chamado': t[3],
-                    'local': t[4],
-                    'emergencial': t[5]
+                    'numero_chamado': t[2],
+                    'local': t[3],
+                    'emergencial': t[4],
+                    'realizador_nome': t[5] or 'Não informado'  # Só o nome, sem email
                 }
                 resultado.append(tarefa_dict)
 
@@ -333,6 +338,7 @@ class MonitorTarefasFinalizadas:
             print("=" * 60)
             print(f"Chamado: {tarefa['numero_chamado']}")
             print(f"Tarefa: {tarefa['numero_tarefa']}")
+            print(f"Realizada por: {tarefa['realizador_nome']}")  # NOVA INFO!
             print(f"Finalizada em: {tarefa['data_finalizacao']}")
             print("=" * 60)
 
