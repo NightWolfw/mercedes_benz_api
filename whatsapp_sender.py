@@ -12,7 +12,7 @@ class WhatsAppSender:
     def __init__(self):
         # COLOQUE SUAS CREDENCIAIS AQUI
         self.api_key = "2712x7347337999"
-        self.grupo_id = "120363421436589792@g.us"
+        self.grupo_id = "120363319034578791@g.us"
 
         # Configurações automáticas
         self.base_url = f"https://us.api-wa.me/{self.api_key}/message/text"
@@ -167,7 +167,7 @@ Criado em: {data_formatada}"""
         return self.enviar_mensagem(mensagem)
 
     def formatar_mensagem_tarefa_finalizada(self, tarefa):
-        """Formata mensagem de conclusão - AGORA COM QUEM REALIZOU!"""
+        """Formata mensagem de conclusão - COM INFO DAS EXECUÇÕES!"""
         print("DEBUG tarefa finalizada:", tarefa)
 
         emergencial_emoji = "🚨 " if tarefa.get('emergencial') else ""
@@ -179,15 +179,28 @@ Criado em: {data_formatada}"""
         else:
             realizador_linha = "Realizada por: Sistema/Automático"
 
+        # Pega as informações extras das execuções
+        status_maquina = tarefa.get('status_maquina', '').strip()
+        descricao_atividade = tarefa.get('descricao_atividade', '').strip()
+
+        # Monta a mensagem básica
         mensagem = f"""{emergencial_emoji}✅ TAREFA CONCLUÍDA - MERCEDES SBC
 
 Chamado: {tarefa.get('numero_chamado', 'N/A')}
 Tarefa: {tarefa.get('numero_tarefa', 'N/A')}
 Local: {tarefa.get('local', 'N/A')}  
-{realizador_linha}
-Finalizado em: {self.formatar_data(tarefa.get('data_finalizacao'))}
+{realizador_linha}"""
 
-Trabalho concluído com sucesso!!! 🎉"""
+        # Adiciona status da máquina se tiver
+        if status_maquina:
+            mensagem += f"\nStatus da máquina: *{status_maquina}*"
+
+        # Adiciona descrição da atividade se tiver
+        if descricao_atividade:
+            mensagem += f"\nAtividade realizada: *{descricao_atividade}*"
+
+        # Finaliza
+        mensagem += f"\nFinalizado em: {self.formatar_data(tarefa.get('data_finalizacao'))}\n\nTrabalho concluído com sucesso!!! 🎉"
 
         return mensagem
 
@@ -216,7 +229,9 @@ if __name__ == "__main__":
         'local': 'Galpão A - Setor 2',
         'realizador_nome': 'José da Silva',
         'data_finalizacao': datetime.now(),
-        'emergencial': False
+        'emergencial': False,
+        'status_maquina': 'Operacional - Sem problemas',
+        'descricao_atividade': 'Troca de óleo hidráulico e revisão geral dos sistemas'
     }
 
     # Testa o formato das mensagens

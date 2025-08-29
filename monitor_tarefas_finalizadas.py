@@ -253,7 +253,7 @@ class MonitorTarefasFinalizadas:
             return []
 
     def buscar_dados_tarefa_finalizada_lista(self, ids_tarefas):
-        """Busca dados completos das tarefas finalizadas - AGORA COM QUEM REALIZOU!"""
+        """Busca dados completos das tarefas finalizadas - COM REALIZADOR + INFO DAS EXECUÇÕES!"""
         conn = self.conectar_bd()
         if not conn:
             return []
@@ -262,9 +262,10 @@ class MonitorTarefasFinalizadas:
 
         placeholders = ','.join(['%s'] * len(ids_tarefas))
 
-        # AQUI ESTÁ A MÁGICA! Adicionei o JOIN com dbo.recurso
+        # Query principal das tarefas
         query = f"""
         SELECT 
+            T.id as tarefa_id,
             T.numero as numero_tarefa,
             T.terminoreal as data_finalizacao,
             C.numero as numero_chamado,
@@ -280,19 +281,35 @@ class MonitorTarefasFinalizadas:
         try:
             cursor.execute(query, tuple(ids_tarefas))
             tarefas_raw = cursor.fetchall()
+
+            # Busca as execuções em consulta separada pra ser mais leve
+            execucoes_por_tarefa = self.buscar_execucoes_das_tarefas(cursor, ids_tarefas)
+
             cursor.close()
             conn.close()
 
             resultado = []
             for t in tarefas_raw:
+                # Info básica da tarefa
                 tarefa_dict = {
-                    'numero_tarefa': t[0],
-                    'data_finalizacao': t[1],
-                    'numero_chamado': t[2],
-                    'local': t[3],
-                    'emergencial': t[4],
-                    'realizador_nome': t[5] or 'Não informado'  # Só o nome, sem email
+                    'numero_tarefa': t[1],
+                    'data_finalizacao': t[2],
+                    'numero_chamado': t[3],
+                    'local': t[4],
+                    'emergencial': t[5],
+                    'realizador_nome': t[6] or 'Não informado'
                 }
+
+                # Adiciona info das execuções se tiver
+                tarefa_id = t[0]
+                if tarefa_id in execucoes_por_tarefa:
+                    execucoes = execucoes_por_tarefa[tarefa_id]
+                    tarefa_dict['status_maquina'] = execucoes.get('status_maquina', '')
+                    tarefa_dict['descricao_atividade'] = execucoes.get('descricao_atividade', '')
+                else:
+                    tarefa_dict['status_maquina'] = ''
+                    tarefa_dict['descricao_atividade'] = ''
+
                 resultado.append(tarefa_dict)
 
             return resultado
@@ -300,6 +317,53 @@ class MonitorTarefasFinalizadas:
         except Exception as e:
             print(f"Erro ao buscar dados finalizadas: {e}")
             return []
+
+    def buscar_execucoes_das_tarefas(self, cursor, ids_tarefas):
+        """Busca só as execuções que interessam - CONSULTA LEVE!"""
+        if not ids_tarefas:
+            return {}
+
+        placeholders = ','.join(['%s'] * len(ids_tarefas))
+
+        # Query direta e leve - só pega os dois tipos de pergunta que interessam
+        query_execucoes = f"""
+        SELECT 
+            tarefaid,
+            perguntaid,
+            conteudo
+        FROM dbo.execucao 
+        WHERE tarefaid IN ({placeholders})
+          AND perguntaid IN ('d00fa280-5460-4704-9278-e70e8761f700', 'ec284022-cb0d-4cdd-a681-c3f313010504')
+        """
+
+        try:
+            cursor.execute(query_execucoes, tuple(ids_tarefas))
+            execucoes_raw = cursor.fetchall()
+
+            # Organiza as execuções por tarefa
+            execucoes_organizadas = {}
+
+            for exec_row in execucoes_raw:
+                tarefa_id = exec_row[0]
+                pergunta_id = exec_row[1]
+                conteudo = exec_row[2] or ''  # Garantindo que não seja None
+
+                if tarefa_id not in execucoes_organizadas:
+                    execucoes_organizadas[tarefa_id] = {}
+
+                # Identifica qual tipo de info é baseado no pergunta_id
+                if pergunta_id == 'd00fa280-5460-4704-9278-e70e8761f700':
+                    execucoes_organizadas[tarefa_id]['status_maquina'] = conteudo.strip()
+                elif pergunta_id == 'ec284022-cb0d-4cdd-a681-c3f313010504':
+                    execucoes_organizadas[tarefa_id]['descricao_atividade'] = conteudo.strip()
+
+            return execucoes_organizadas
+
+        except Exception as e:
+            print(f"Erro ao buscar execuções: {e}")
+            return {}
+
+        placeholders = ','.join(['%s'] * len(ids_tarefas))
 
     def adicionar_novas_tarefas_observacao(self):
         """Adiciona novas tarefas na lista de observação"""
