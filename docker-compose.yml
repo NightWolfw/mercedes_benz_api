@@ -7,3 +7,5 @@ services:
       - ./:/app
     # Reinicia sempre que cair / reinicia com o Windows
     restart: always
+    environment:
+      - TZ=America/Sao_Paulo
