@@ -3,6 +3,8 @@ import time
 import json
 import os
 from datetime import datetime, timedelta
+import threading
+import queue
 
 
 class MonitorChamadosMercedes:
@@ -17,38 +19,79 @@ class MonitorChamadosMercedes:
         }
         self.ultima_data_processada = self.get_ultima_data_salva()
         self.chamados_enviados = self.carregar_chamados_enviados()
-        print(f"Última data processada: {self.ultima_data_processada}")
-        print(f"Chamados já enviados: {len(self.chamados_enviados)}")
 
-    def carregar_chamados_enviados(self):
-        """Carrega a lista de chamados que já foram enviados pro WhatsApp"""
+        # NOVOS CONTROLES DE PERFORMANCE
+        self.fila_processamento = queue.Queue()
+        self.conexoes_falharam_consecutivas = 0
+        self.ultima_consulta_sucesso = None
+        self.tempo_ultima_consulta = 0
+        self.stats_sessao = {
+            'consultas_realizadas': 0,
+            'conexoes_falharam': 0,
+            'chamados_processados': 0,
+            'tempo_total_consultas': 0,
+            'inicio_sessao': datetime.now()
+        }
+
+        self.log_detalhado(f"🚀 Monitor iniciado - Última data: {self.ultima_data_processada}")
+        self.log_detalhado(f"📋 Chamados já enviados: {len(self.chamados_enviados)}")
+
+    def log_detalhado(self, mensagem, nivel='INFO'):
+        """Sistema de log ninja com timestamps e níveis"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # Emojis por nível pra ficar mais fácil de ler
+        emojis = {
+            'INFO': '💡',
+            'SUCCESS': '✅',
+            'WARNING': '⚠️',
+            'ERROR': '❌',
+            'DEBUG': '🔍',
+            'STATS': '📊'
+        }
+
+        emoji = emojis.get(nivel, '📝')
+        log_line = f"[{timestamp}] {emoji} {nivel}: {mensagem}"
+
+        print(log_line)
+
+        # Salva também em arquivo pra histórico
         try:
-            if os.path.exists('chamados_enviados.json'):
-                with open('chamados_enviados.json', 'r') as f:
-                    return set(json.load(f))
-            return set()
+            with open('mercedes_monitor_logs.txt', 'a', encoding='utf-8') as f:
+                f.write(log_line + '\n')
         except:
-            return set()
+            pass  # Não para o sistema se não conseguir salvar log
 
-    def salvar_chamados_enviados(self):
-        """Salva a lista de chamados enviados"""
-        try:
-            with open('chamados_enviados.json', 'w') as f:
-                json.dump(list(self.chamados_enviados), f)
-        except Exception as e:
-            print(f"Erro ao salvar lista de enviados: {e}")
+    def mostrar_stats_sessao(self):
+        """Mostra estatísticas da sessão atual"""
+        agora = datetime.now()
+        tempo_rodando = agora - self.stats_sessao['inicio_sessao']
 
-    def marcar_chamado_como_enviado(self, numero_chamado):
-        """Marca um chamado como já enviado"""
-        self.chamados_enviados.add(str(numero_chamado))
-        self.salvar_chamados_enviados()
-        print(f"Chamado {numero_chamado} marcado como enviado")
+        tempo_medio_consulta = 0
+        if self.stats_sessao['consultas_realizadas'] > 0:
+            tempo_medio_consulta = self.stats_sessao['tempo_total_consultas'] / self.stats_sessao[
+                'consultas_realizadas']
+
+        self.log_detalhado("=" * 60, 'STATS')
+        self.log_detalhado(f"📊 ESTATÍSTICAS DA SESSÃO", 'STATS')
+        self.log_detalhado(f"⏱️  Tempo rodando: {str(tempo_rodando).split('.')[0]}", 'STATS')
+        self.log_detalhado(f"🔍 Consultas realizadas: {self.stats_sessao['consultas_realizadas']}", 'STATS')
+        self.log_detalhado(f"❌ Falhas de conexão: {self.stats_sessao['conexoes_falharam']}", 'STATS')
+        self.log_detalhado(f"📨 Chamados processados: {self.stats_sessao['chamados_processados']}", 'STATS')
+        self.log_detalhado(f"⚡ Tempo médio por consulta: {tempo_medio_consulta:.2f}s", 'STATS')
+        if self.ultima_consulta_sucesso:
+            self.log_detalhado(f"✅ Última consulta OK: {self.ultima_consulta_sucesso}", 'STATS')
+        self.log_detalhado("=" * 60, 'STATS')
 
     def conectar_bd(self, tentativas_maximas=3):
-        """Conecta no PostgreSQL da Mercedes - VERSÃO ULTRA RESILIENTE"""
+        """Conecta no PostgreSQL - VERSÃO COM LOGS DETALHADOS"""
+        inicio_tentativas = time.time()
+
         for tentativa in range(tentativas_maximas):
+            inicio_tentativa = time.time()
+
             try:
-                print(f"Tentativa de conexão #{tentativa + 1}...")
+                self.log_detalhado(f"🔄 Tentativa de conexão #{tentativa + 1}/{tentativas_maximas}...")
 
                 conn = psycopg2.connect(
                     host=self.db_config['host'],
@@ -56,61 +99,90 @@ class MonitorChamadosMercedes:
                     user=self.db_config['user'],
                     password=self.db_config['password'],
                     port=self.db_config['port'],
-                    connect_timeout=30,
+                    connect_timeout=20,  # Reduzido de 30 para 20
                     keepalives=1,
                     keepalives_idle=30,
                     keepalives_interval=5,
                     keepalives_count=5,
                     sslmode='prefer'
                 )
-                print("✅ Conexão estabelecida com sucesso!")
+
+                tempo_conexao = time.time() - inicio_tentativa
+                self.log_detalhado(f"✅ Conexão OK em {tempo_conexao:.2f}s", 'SUCCESS')
+                self.conexoes_falharam_consecutivas = 0
                 return conn
 
             except Exception as e:
-                print(f"❌ Tentativa #{tentativa + 1} falhou: {e}")
+                tempo_tentativa = time.time() - inicio_tentativa
+                self.log_detalhado(f"❌ Tentativa #{tentativa + 1} falhou em {tempo_tentativa:.2f}s: {str(e)[:100]}...",
+                                   'ERROR')
+                self.stats_sessao['conexoes_falharam'] += 1
 
                 if tentativa < tentativas_maximas - 1:
-                    tempo_espera = (tentativa + 1) * 10
-                    print(f"Aguardando {tempo_espera}s antes da próxima tentativa...")
+                    tempo_espera = (tentativa + 1) * 5  # 5s, 10s, 15s...
+                    self.log_detalhado(f"⏳ Aguardando {tempo_espera}s antes da próxima tentativa...", 'WARNING')
                     time.sleep(tempo_espera)
 
+        tempo_total = time.time() - inicio_tentativas
+        self.conexoes_falharam_consecutivas += 1
+        self.log_detalhado(f"🚨 Todas as tentativas falharam em {tempo_total:.2f}s", 'ERROR')
         return None
 
     def buscar_novos_chamados(self):
-        """Versão otimizada sem subselects assassinos"""
+        """Versão otimizada COM LOGS DETALHADOS de performance"""
+        inicio_consulta = time.time()
+        self.log_detalhado(f"🔍 Iniciando busca de chamados desde: {self.ultima_data_processada}", 'DEBUG')
+
         conn = self.conectar_bd()
         if not conn:
             return []
 
         cursor = conn.cursor()
 
-        # Query simples e direta - sem frescura
+        # Query simples e direta
         query = """
-                SELECT T.numero           AS numero_tarefa, \
-                       T.criado           AS data_criacao, \
-                       T.solicitantenome  AS solicitante, \
-                       T.servicodescricao AS tipo_servico, \
-                       T.descricao        AS descricao_tarefa, \
+                SELECT T.numero           AS numero_tarefa,
+                       T.criado           AS data_criacao,
+                       T.solicitantenome  AS solicitante,
+                       T.servicodescricao AS tipo_servico,
+                       T.descricao        AS descricao_tarefa,
                        T.objetoorigemid   AS chamado_id
                 FROM dbo.tarefa T
                 WHERE T.estruturanivel2 IN ('44462 - SP - MAI - MERCEDES - SBC - MANUT')
                   AND T.origem = 48
                   AND T.criado > %s::timestamp
                 ORDER BY T.criado DESC
-                    LIMIT 50 \
+                    LIMIT 50
                 """
 
         try:
+            inicio_query = time.time()
             cursor.execute(query, (self.ultima_data_processada,))
             tarefas_raw = cursor.fetchall()
+            tempo_query = time.time() - inicio_query
+
             cursor.close()
             conn.close()
 
+            self.log_detalhado(f"🎯 Query executada em {tempo_query:.2f}s - {len(tarefas_raw)} registros", 'DEBUG')
+
             if not tarefas_raw:
+                tempo_total = time.time() - inicio_consulta
+                self.log_detalhado(f"📭 Nenhuma tarefa nova encontrada (consulta: {tempo_total:.2f}s)", 'INFO')
+                self.stats_sessao['consultas_realizadas'] += 1
+                self.stats_sessao['tempo_total_consultas'] += tempo_total
+                self.ultima_consulta_sucesso = datetime.now().strftime('%H:%M:%S')
                 return []
+
+            # Log da tarefa mais recente encontrada
+            tarefa_mais_recente = tarefas_raw[0]  # Já vem ordenado por criado DESC
+            self.log_detalhado(
+                f"🆕 Tarefa mais recente no banco: #{tarefa_mais_recente[0]} criada em {tarefa_mais_recente[1]}", 'INFO')
 
             # Busca dados dos chamados em query separada
             ids_chamados = [t[5] for t in tarefas_raw]  # t[5] = chamado_id
+            self.log_detalhado(f"🔄 Buscando dados de {len(ids_chamados)} chamados...", 'DEBUG')
+
             dados_chamados = self.buscar_dados_chamados(ids_chamados)
 
             # Junta os dados das duas consultas
@@ -132,17 +204,26 @@ class MonitorChamadosMercedes:
                 }
                 resultado.append(chamado_completo)
 
+            tempo_total = time.time() - inicio_consulta
+            self.stats_sessao['consultas_realizadas'] += 1
+            self.stats_sessao['tempo_total_consultas'] += tempo_total
+            self.ultima_consulta_sucesso = datetime.now().strftime('%H:%M:%S')
+
+            self.log_detalhado(f"✅ Consulta completa em {tempo_total:.2f}s - {len(resultado)} chamados retornados",
+                               'SUCCESS')
             return resultado
 
         except Exception as e:
-            print(f"Erro na consulta: {e}")
+            tempo_total = time.time() - inicio_consulta
+            self.log_detalhado(f"💥 Erro na consulta após {tempo_total:.2f}s: {e}", 'ERROR')
             return []
 
     def buscar_dados_chamados(self, ids_chamados):
-        """Busca dados dos chamados em separado"""
+        """Busca dados dos chamados - COM LOG DE PERFORMANCE"""
         if not ids_chamados:
             return {}
 
+        inicio_busca = time.time()
         conn = self.conectar_bd()
         if not conn:
             return {}
@@ -168,6 +249,9 @@ class MonitorChamadosMercedes:
             cursor.close()
             conn.close()
 
+            tempo_busca = time.time() - inicio_busca
+            self.log_detalhado(f"📊 Dados dos chamados obtidos em {tempo_busca:.2f}s", 'DEBUG')
+
             # Retorna como dict indexado pelo ID do chamado
             return {
                 c[0]: {
@@ -180,100 +264,133 @@ class MonitorChamadosMercedes:
             }
 
         except Exception as e:
-            print(f"Erro ao buscar dados dos chamados: {e}")
+            tempo_busca = time.time() - inicio_busca
+            self.log_detalhado(f"💥 Erro ao buscar dados dos chamados após {tempo_busca:.2f}s: {e}", 'ERROR')
             return {}
 
     def processar_novos_chamados(self):
-        """Processa cada chamado novo que apareceu"""
+        """Processa chamados com controle de fila e logs detalhados"""
+        self.log_detalhado("🔄 Iniciando processamento de chamados...", 'INFO')
+
         novos_chamados = self.buscar_novos_chamados()
 
         if not novos_chamados:
-            print("Nenhum chamado novo por enquanto...")
             return
 
-        print(f"Encontrei {len(novos_chamados)} chamado(s) no banco...")
+        self.log_detalhado(f"📋 {len(novos_chamados)} chamado(s) encontrado(s) no banco", 'INFO')
 
-        # Filtra apenas os que REALMENTE são novos (não foram enviados ainda)
+        # Filtra apenas os que REALMENTE são novos
         chamados_realmente_novos = []
+        chamados_ja_enviados = 0
+
         for chamado in novos_chamados:
             numero_chamado = str(chamado['numero_chamado'])
             if numero_chamado not in self.chamados_enviados:
                 chamados_realmente_novos.append(chamado)
             else:
-                print(f"Chamado {numero_chamado} já foi enviado antes")
+                chamados_ja_enviados += 1
+
+        if chamados_ja_enviados > 0:
+            self.log_detalhado(f"🔄 {chamados_ja_enviados} chamado(s) já foram processados anteriormente", 'INFO')
 
         if not chamados_realmente_novos:
-            print("Todos os chamados já foram processados anteriormente")
+            self.log_detalhado("✅ Todos os chamados já foram processados", 'INFO')
             return
 
-        print(f"{len(chamados_realmente_novos)} chamado(s) REALMENTE NOVOS!")
+        self.log_detalhado(f"🆕 {len(chamados_realmente_novos)} chamado(s) REALMENTE NOVOS para processar!", 'SUCCESS')
 
-        for chamado in chamados_realmente_novos:
+        for i, chamado in enumerate(chamados_realmente_novos, 1):
+            self.log_detalhado(
+                f"⚡ Processando chamado {i}/{len(chamados_realmente_novos)}: {chamado['numero_chamado']}", 'INFO')
+
             # Processa o chamado individual
             self.processar_chamado_individual(chamado)
 
             # IMPORTANTE: Marca como enviado para não repetir
             self.marcar_chamado_como_enviado(chamado['numero_chamado'])
+            self.stats_sessao['chamados_processados'] += 1
 
             # Atualiza a última data processada
             if chamado['data_criacao']:
-                self.ultima_data_processada = chamado['data_criacao'].strftime('%Y-%m-%d %H:%M:%S')
-                self.salvar_ultima_data(self.ultima_data_processada)
+                nova_data = chamado['data_criacao'].strftime('%Y-%m-%d %H:%M:%S')
+                self.ultima_data_processada = nova_data
+                self.salvar_ultima_data(nova_data)
+                self.log_detalhado(f"📅 Última data atualizada: {nova_data}", 'DEBUG')
+
+            # Pequeno delay entre chamados pra não sobrecarregar
+            if i < len(chamados_realmente_novos):
+                time.sleep(0.5)
+
+        self.log_detalhado(f"🎉 Processamento concluído! {len(chamados_realmente_novos)} chamados novos processados",
+                           'SUCCESS')
+
+    def carregar_chamados_enviados(self):
+        """Carrega a lista de chamados que já foram enviados pro WhatsApp"""
+        try:
+            if os.path.exists('chamados_enviados.json'):
+                with open('chamados_enviados.json', 'r') as f:
+                    chamados = set(json.load(f))
+                    self.log_detalhado(f"📂 Carregados {len(chamados)} chamados da lista de enviados", 'DEBUG')
+                    return chamados
+            return set()
+        except Exception as e:
+            self.log_detalhado(f"⚠️ Erro ao carregar lista de enviados: {e}", 'WARNING')
+            return set()
+
+    def salvar_chamados_enviados(self):
+        """Salva a lista de chamados enviados"""
+        try:
+            with open('chamados_enviados.json', 'w') as f:
+                json.dump(list(self.chamados_enviados), f)
+            self.log_detalhado(f"💾 Lista de enviados salva ({len(self.chamados_enviados)} itens)", 'DEBUG')
+        except Exception as e:
+            self.log_detalhado(f"❌ Erro ao salvar lista de enviados: {e}", 'ERROR')
+
+    def marcar_chamado_como_enviado(self, numero_chamado):
+        """Marca um chamado como já enviado"""
+        self.chamados_enviados.add(str(numero_chamado))
+        self.salvar_chamados_enviados()
+        self.log_detalhado(f"✅ Chamado {numero_chamado} marcado como enviado", 'SUCCESS')
 
     def processar_chamado_individual(self, chamado):
-        """Processa um chamado específico - agora envia pro WhatsApp também"""
-        print("=" * 60)
-        print(f"NOVO CHAMADO DETECTADO!")
-        print("=" * 60)
-        print(f"Número: {chamado['numero_chamado']}")
-        print(f"Tipo: {chamado['tipo_servico']}")
-        print(f"Solicitante: {chamado['solicitante']}")
-        print(f"Local: {chamado['local']}")
-        print(f"Descrição: {chamado['descricao_chamado']}")
-        print(f"Criado em: {chamado['data_criacao']}")
-        # REMOVE ESSAS DUAS LINHAS QUE ESTÃO DANDO ERRO:
-        # print(f"Categoria: {chamado['categoria']}")
-        # print(f"Subcategoria: {chamado['subcategoria']}")
-        print("=" * 60)
+        """Processa um chamado específico - COM LOGS DETALHADOS"""
+        self.log_detalhado("=" * 60, 'INFO')
+        self.log_detalhado(f"🆕 NOVO CHAMADO DETECTADO!", 'SUCCESS')
+        self.log_detalhado("=" * 60, 'INFO')
+        self.log_detalhado(f"📋 Número: {chamado['numero_chamado']}", 'INFO')
+        self.log_detalhado(f"🔧 Tipo: {chamado['tipo_servico']}", 'INFO')
+        self.log_detalhado(f"👤 Solicitante: {chamado['solicitante']}", 'INFO')
+        self.log_detalhado(f"📍 Local: {chamado['local']}", 'INFO')
+        self.log_detalhado(
+            f"📝 Descrição: {chamado['descricao_chamado'][:100]}{'...' if len(str(chamado['descricao_chamado'])) > 100 else ''}",
+            'INFO')
+        self.log_detalhado(f"🕐 Criado em: {chamado['data_criacao']}", 'INFO')
+        if chamado['emergencial']:
+            self.log_detalhado(f"🚨 EMERGENCIAL: SIM", 'WARNING')
+        self.log_detalhado("=" * 60, 'INFO')
 
-        # INTEGRAÇÃO WHATSAPP - A MÁGICA ACONTECE AQUI!
+        # INTEGRAÇÃO WHATSAPP
         if hasattr(self, 'whatsapp_sender') and self.whatsapp_sender:
-            print("Enviando pro WhatsApp...")
+            self.log_detalhado("📱 Enviando para WhatsApp...", 'INFO')
+            inicio_whatsapp = time.time()
+
             try:
                 sucesso = self.whatsapp_sender.enviar_chamado(chamado)
+                tempo_whatsapp = time.time() - inicio_whatsapp
+
                 if sucesso:
-                    print("Chamado enviado pro grupo da Mercedes com sucesso!")
+                    self.log_detalhado(f"✅ WhatsApp enviado com sucesso em {tempo_whatsapp:.2f}s!", 'SUCCESS')
                 else:
-                    print("Falha ao enviar pro WhatsApp, mas chamado foi processado")
+                    self.log_detalhado(f"⚠️ Falha no WhatsApp após {tempo_whatsapp:.2f}s, mas chamado processado",
+                                       'WARNING')
             except Exception as e:
-                print(f"Erro ao enviar WhatsApp: {e}")
-                print("Continuando mesmo assim...")
+                tempo_whatsapp = time.time() - inicio_whatsapp
+                self.log_detalhado(f"❌ Erro no WhatsApp após {tempo_whatsapp:.2f}s: {e}", 'ERROR')
         else:
-            print("WhatsApp não configurado, só salvando localmente")
-
-        print("=" * 60)
-
-    def formatar_mensagem_whatsapp(self, chamado):
-        """Formata a mensagem que vai pro WhatsApp"""
-        mensagem = f"""*NOVO CHAMADO - MERCEDES SBC*
-
-*Chamado:* {chamado['numero_chamado']}
-*Tipo:* {chamado['tipo_servico']}
-*Solicitante:* {chamado['solicitante']}
-*Local:* {chamado['local']}
-
-*Descrição:*
-{chamado['descricao_chamado']}
-
-*Criado em:* {chamado['data_criacao'].strftime('%d/%m/%Y às %H:%M')}
-
-"""
-
-        return mensagem
+            self.log_detalhado("📱 WhatsApp não configurado - salvando apenas localmente", 'WARNING')
 
     def get_ultima_data_salva(self):
-        """Recupera a última data processada - versão à prova de UUID"""
-        # FORÇA um reset se tiver dados corrompidos
+        """Recupera a última data processada com logs"""
         data_padrao = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
 
         try:
@@ -281,43 +398,43 @@ class MonitorChamadosMercedes:
                 with open('ultima_data_mercedes.txt', 'r') as f:
                     data_str = f.read().strip()
 
-                # Verifica se parece com UUID (tem hífens e é longo)
+                # Verifica se parece com UUID (dados corrompidos)
                 if len(data_str) > 30 or '-' in data_str[:8]:
-                    print(f"DETECTADO UUID NO ARQUIVO: {data_str[:30]}...")
-                    print("Resetando para data válida")
-                    os.remove('ultima_data_mercedes.txt')  # Deleta arquivo corrompido
+                    self.log_detalhado(f"⚠️ UUID detectado no arquivo de data: {data_str[:30]}... Resetando!",
+                                       'WARNING')
+                    os.remove('ultima_data_mercedes.txt')
+                    self.salvar_ultima_data(data_padrao)
                     return data_padrao
 
                 # Verifica se é data válida
                 try:
                     datetime.strptime(data_str, '%Y-%m-%d %H:%M:%S')
+                    self.log_detalhado(f"📅 Data carregada do arquivo: {data_str}", 'DEBUG')
                     return data_str
                 except:
-                    print("Data inválida no arquivo, resetando")
+                    self.log_detalhado("⚠️ Data inválida no arquivo, usando padrão", 'WARNING')
+                    self.salvar_ultima_data(data_padrao)
                     return data_padrao
+            else:
+                self.log_detalhado("📅 Arquivo de data não existe, criando com data padrão", 'INFO')
+                self.salvar_ultima_data(data_padrao)
 
         except Exception as e:
-            print(f"Erro ao ler arquivo: {e}")
-
-        # Salva a data padrão
-        with open('ultima_data_mercedes.txt', 'w') as f:
-            f.write(data_padrao)
+            self.log_detalhado(f"❌ Erro ao ler arquivo de data: {e}", 'ERROR')
 
         return data_padrao
 
     def salvar_ultima_data(self, data_processada):
-        """Salva data com validação robusta"""
+        """Salva data com validação e logs"""
         try:
-            # Converte datetime object pra string se necessário
             if isinstance(data_processada, datetime):
                 data_str = data_processada.strftime('%Y-%m-%d %H:%M:%S')
             else:
                 data_str = str(data_processada)
 
-            # PARANOIA: verifica se parece com UUID
+            # Validação anti-UUID
             if len(data_str) > 30 or (len(data_str) > 20 and '-' in data_str[:8]):
-                print(f"AVISO: Tentativa de salvar UUID como data: {data_str[:30]}...")
-                print("Ignorando e mantendo data anterior")
+                self.log_detalhado(f"🚨 Tentativa de salvar UUID como data: {data_str[:30]}... BLOQUEADO!", 'ERROR')
                 return
 
             # Testa se consegue parsear
@@ -325,96 +442,14 @@ class MonitorChamadosMercedes:
 
             with open('ultima_data_mercedes.txt', 'w') as f:
                 f.write(data_str)
-            print(f"Data salva: {data_str}")
+
+            self.log_detalhado(f"💾 Data salva com sucesso: {data_str}", 'DEBUG')
 
         except Exception as e:
-            print(f"ERRO ao salvar data: {e}")
-            print(f"Valor recebido: {data_processada}")
-            print("Mantendo data anterior por segurança")
-
-    def salvar_ultima_data(self, data_processada):
-        """Salva a última data processada com validação"""
-        try:
-            # Se data_processada for datetime object, converte
-            if isinstance(data_processada, datetime):
-                data_str = data_processada.strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                data_str = str(data_processada)
-
-            # Valida se é uma data válida antes de salvar
-            datetime.strptime(data_str, '%Y-%m-%d %H:%M:%S')
-
-            with open('ultima_data_mercedes.txt', 'w') as f:
-                f.write(data_str)
-            print(f"Data salva com sucesso: {data_str}")
-
-        except Exception as e:
-            print(f"Erro ao salvar data: {e}")
-            print(f"Tentou salvar: {data_processada}")
-
-    def testar_conexao(self):
-        """Testa se a conexão tá funcionando"""
-        print("Testando conexão...")
-        conn = self.conectar_bd()
-        if conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT version()")
-            versao = cursor.fetchone()
-            print(f"PostgreSQL conectado: {versao[0]}")
-            cursor.close()
-            conn.close()
-            return True
-        return False
-
-    def rodar_monitor(self):
-        """Loop principal - VERSÃO INDESTRUTÍVEL"""
-        print("MONITOR MERCEDES INICIANDO...")
-        print(f"Servidor: {self.db_config['host']}")
-        print(f"Database: {self.db_config['database']}")
-        print(f"MODO RESILIENTE ATIVO!")
-        print("-" * 50)
-
-        contador_ciclos = 0
-        erros_consecutivos = 0
-
-        while True:
-            try:
-                contador_ciclos += 1
-                print(f"Ciclo #{contador_ciclos} - {datetime.now().strftime('%H:%M:%S')}")
-
-                # Testa conexão antes de processar
-                if not self.testar_conexao_rapida():
-                    print("🚨 Banco indisponível, aguardando...")
-                    erros_consecutivos += 1
-                    tempo_espera = min(60 * erros_consecutivos, 300)  # Max 5 min
-                    print(f"Tentando novamente em {tempo_espera}s...")
-                    time.sleep(tempo_espera)
-                    continue
-
-                # Reseta contador se conectou
-                erros_consecutivos = 0
-
-                try:
-                    self.processar_novos_chamados()
-                except Exception as e:
-                    print(f"Erro ao processar chamados: {e}")
-
-                print("Dormindo 120 segundos...")
-                time.sleep(120)
-
-            except KeyboardInterrupt:
-                print("\nMonitor parado pelo usuário")
-                break
-
-            except Exception as e:
-                print(f"Erro inesperado: {e}")
-                erros_consecutivos += 1
-                tempo_espera = min(60 * erros_consecutivos, 300)
-                print(f"Tentando novamente em {tempo_espera}s...")
-                time.sleep(tempo_espera)
+            self.log_detalhado(f"❌ ERRO ao salvar data: {e} | Valor: {data_processada}", 'ERROR')
 
     def testar_conexao_rapida(self):
-        """Teste rápido sem travar"""
+        """Teste rápido com log"""
         try:
             conn = self.conectar_bd(tentativas_maximas=1)
             if conn:
@@ -424,13 +459,93 @@ class MonitorChamadosMercedes:
         except:
             return False
 
+    def rodar_monitor(self):
+        """Loop principal COM CONTROLE INTELIGENTE DE INTERVALO"""
+        self.log_detalhado("🚀 MONITOR MERCEDES INICIANDO...", 'SUCCESS')
+        self.log_detalhado(f"🏢 Servidor: {self.db_config['host']}", 'INFO')
+        self.log_detalhado(f"💽 Database: {self.db_config['database']}", 'INFO')
+        self.log_detalhado(f"🛡️ MODO RESILIENTE ATIVO!", 'SUCCESS')
+        self.log_detalhado("-" * 50, 'INFO')
 
-# Como usar:
+        contador_ciclos = 0
+        contador_stats = 0
+
+        while True:
+            try:
+                contador_ciclos += 1
+                contador_stats += 1
+
+                self.log_detalhado(f"🔄 Ciclo #{contador_ciclos} iniciado", 'INFO')
+
+                # Mostra stats a cada 10 ciclos
+                if contador_stats >= 10:
+                    self.mostrar_stats_sessao()
+                    contador_stats = 0
+
+                # Testa conexão antes de processar
+                if not self.testar_conexao_rapida():
+                    self.log_detalhado("🚨 Banco indisponível!", 'ERROR')
+                    self.conexoes_falharam_consecutivas += 1
+
+                    # Intervalo inteligente baseado nas falhas
+                    if self.conexoes_falharam_consecutivas <= 3:
+                        tempo_espera = 60  # 1 minuto nas primeiras falhas
+                    elif self.conexoes_falharam_consecutivas <= 6:
+                        tempo_espera = 120  # 2 minutos se persistir
+                    else:
+                        tempo_espera = 300  # 5 minutos se tá muito ruim
+
+                    self.log_detalhado(
+                        f"⏳ Falha #{self.conexoes_falharam_consecutivas} - Aguardando {tempo_espera}s...", 'WARNING')
+                    time.sleep(tempo_espera)
+                    continue
+
+                # Reset contador se conectou
+                if self.conexoes_falharam_consecutivas > 0:
+                    self.log_detalhado(f"✅ Conexão restaurada após {self.conexoes_falharam_consecutivas} falha(s)!",
+                                       'SUCCESS')
+                    self.conexoes_falharam_consecutivas = 0
+
+                # Processa chamados
+                try:
+                    self.processar_novos_chamados()
+                except Exception as e:
+                    self.log_detalhado(f"💥 Erro ao processar chamados: {e}", 'ERROR')
+
+                # Intervalo baseado na carga do sistema
+                if self.stats_sessao['consultas_realizadas'] > 0:
+                    tempo_medio = self.stats_sessao['tempo_total_consultas'] / self.stats_sessao['consultas_realizadas']
+
+                    # Se as consultas estão demoradas, aumenta o intervalo
+                    if tempo_medio > 10:  # Mais de 10s por consulta
+                        intervalo = 180  # 3 minutos
+                        self.log_detalhado(f"🐌 Sistema lento (média: {tempo_medio:.1f}s) - intervalo 3min", 'WARNING')
+                    elif tempo_medio > 5:  # Mais de 5s por consulta
+                        intervalo = 150  # 2.5 minutos
+                        self.log_detalhado(f"⚡ Sistema médio (média: {tempo_medio:.1f}s) - intervalo 2.5min", 'INFO')
+                    else:
+                        intervalo = 120  # 2 minutos normal
+                        self.log_detalhado(f"🚀 Sistema rápido (média: {tempo_medio:.1f}s) - intervalo 2min", 'SUCCESS')
+                else:
+                    intervalo = 120
+
+                self.log_detalhado(f"😴 Dormindo por {intervalo}s...", 'INFO')
+                time.sleep(intervalo)
+
+            except KeyboardInterrupt:
+                self.log_detalhado("\n👋 Monitor parado pelo usuário (Ctrl+C)", 'INFO')
+                self.mostrar_stats_sessao()
+                break
+
+            except Exception as e:
+                self.log_detalhado(f"💥 Erro inesperado: {e}", 'ERROR')
+                self.conexoes_falharam_consecutivas += 1
+                tempo_espera = min(60 * self.conexoes_falharam_consecutivas, 300)
+                self.log_detalhado(f"⏳ Recuperando em {tempo_espera}s...", 'WARNING')
+                time.sleep(tempo_espera)
+
+
+# Teste direto
 if __name__ == "__main__":
-    print("MONITOR DE CHAMADOS MERCEDES")
-    print("=" * 40)
-    print("Usuário: gpssa_pg_jonatan_lopes")
-    print("Conectando na Mercedes SBC...")
-
     monitor = MonitorChamadosMercedes()
     monitor.rodar_monitor()
