@@ -86,15 +86,111 @@ class MonitorTarefasFinalizadas:
             self.log_detalhado(f"✅ Última consulta OK: {self.ultima_consulta_sucesso}", 'STATS')
         self.log_detalhado("=" * 60, 'STATS')
 
-    def conectar_bd(self, tentativas_maximas=3):
-        """Conecta no PostgreSQL - VERSÃO COM LOGS DETALHADOS"""
+    def detectar_erro_ssl_eof(self, erro_str):
+        """Detecta se o erro é relacionado a SSL EOF - MODO BERSERKER ATIVADO"""
+        indicadores_ssl_eof = [
+            'SSL SYSCALL error: EOF detected',
+            'SSL connection has been closed unexpectedly',
+            'SSL: UNEXPECTED_EOF_WHILE_READING',
+            'connection closed',
+            'server closed the connection unexpectedly',
+            'EOF detected'
+        ]
+
+        erro_lower = str(erro_str).lower()
+        for indicador in indicadores_ssl_eof:
+            if indicador.lower() in erro_lower:
+                return True
+        return False
+
+    def modo_berserker_conexao(self, max_tentativas=50):
+        """
+        MODO BERSERKER PARA TAREFAS! 🔥
+        Fica tentando conectar até conseguir quando rola SSL EOF
+        """
+        self.log_detalhado("🔥🔥🔥 MODO BERSERKER TAREFAS ATIVADO! 🔥🔥🔥", 'WARNING')
+        self.log_detalhado("💀 Vai conectar até conseguir ou morrer tentando!", 'WARNING')
+
+        tentativa = 0
+        tempo_inicio_berserker = time.time()
+
+        while tentativa < max_tentativas:
+            tentativa += 1
+            inicio_tentativa = time.time()
+
+            self.log_detalhado(f"⚔️ BERSERKER TAREFAS - Tentativa #{tentativa}/{max_tentativas}", 'WARNING')
+
+            try:
+                conn = psycopg2.connect(
+                    host=self.db_config['host'],
+                    database=self.db_config['database'],
+                    user=self.db_config['user'],
+                    password=self.db_config['password'],
+                    port=self.db_config['port'],
+                    connect_timeout=15,
+                    keepalives=1,
+                    keepalives_idle=10,
+                    keepalives_interval=2,
+                    keepalives_count=3,
+                    sslmode='prefer'
+                )
+
+                # Testa a conexão
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+
+                tempo_tentativa = time.time() - inicio_tentativa
+                tempo_total_berserker = time.time() - tempo_inicio_berserker
+
+                self.log_detalhado(f"🎯 BERSERKER TAREFAS SUCESSO! Tentativa #{tentativa}", 'SUCCESS')
+                self.log_detalhado(f"⚡ Tempo desta tentativa: {tempo_tentativa:.2f}s", 'SUCCESS')
+                self.log_detalhado(f"🏆 Tempo total berserker: {tempo_total_berserker:.2f}s", 'SUCCESS')
+                self.log_detalhado("🔥 BERSERKER TAREFAS OFF - Voltando ao normal", 'SUCCESS')
+
+                self.conexoes_falharam_consecutivas = 0
+                return conn
+
+            except Exception as e:
+                tempo_tentativa = time.time() - inicio_tentativa
+
+                if self.detectar_erro_ssl_eof(str(e)):
+                    self.log_detalhado(f"💀 Tentativa #{tentativa} - SSL EOF tarefas em {tempo_tentativa:.2f}s", 'ERROR')
+
+                    if tentativa <= 10:
+                        intervalo = 2
+                    elif tentativa <= 20:
+                        intervalo = 5
+                    elif tentativa <= 30:
+                        intervalo = 10
+                    else:
+                        intervalo = 15
+
+                else:
+                    self.log_detalhado(
+                        f"❌ Tentativa #{tentativa} - Outro erro em {tempo_tentativa:.2f}s: {str(e)[:100]}", 'ERROR')
+                    intervalo = min(tentativa * 2, 30)
+
+                if tentativa < max_tentativas:
+                    self.log_detalhado(f"⏳ Berserker tarefas aguardando {intervalo}s...", 'WARNING')
+                    time.sleep(intervalo)
+
+        tempo_total_berserker = time.time() - tempo_inicio_berserker
+        self.log_detalhado(f"💀 BERSERKER TAREFAS FALHOU! {max_tentativas} tentativas em {tempo_total_berserker:.2f}s",
+                           'ERROR')
+
+        return None
+
+    def conectar_bd_resiliente(self, tentativas_normais=3):
+        """Conexão ULTRA RESILIENTE para tarefas"""
         inicio_tentativas = time.time()
 
-        for tentativa in range(tentativas_maximas):
+        for tentativa in range(tentativas_normais):
             inicio_tentativa = time.time()
 
             try:
-                self.log_detalhado(f"🔄 Tentativa conexão #{tentativa + 1}/{tentativas_maximas}...")
+                self.log_detalhado(f"🔄 Tentativa normal tarefas #{tentativa + 1}/{tentativas_normais}...")
 
                 conn = psycopg2.connect(
                     host=self.db_config['host'],
@@ -111,25 +207,33 @@ class MonitorTarefasFinalizadas:
                 )
 
                 tempo_conexao = time.time() - inicio_tentativa
-                self.log_detalhado(f"✅ Conexão OK em {tempo_conexao:.2f}s", 'SUCCESS')
+                self.log_detalhado(f"✅ Conexão tarefas OK em {tempo_conexao:.2f}s", 'SUCCESS')
                 self.conexoes_falharam_consecutivas = 0
                 return conn
 
             except Exception as e:
                 tempo_tentativa = time.time() - inicio_tentativa
-                self.log_detalhado(f"❌ Tentativa #{tentativa + 1} falhou em {tempo_tentativa:.2f}s: {str(e)[:100]}...",
-                                   'ERROR')
+                erro_str = str(e)
+
+                self.log_detalhado(f"❌ Tentativa tarefas #{tentativa + 1} falhou em {tempo_tentativa:.2f}s", 'ERROR')
                 self.stats_sessao['conexoes_falharam'] += 1
 
-                if tentativa < tentativas_maximas - 1:
+                # DETECTA SSL EOF e ativa berserker
+                if self.detectar_erro_ssl_eof(erro_str):
+                    self.log_detalhado("🚨 SSL EOF TAREFAS! Ativando berserker AGORA!", 'WARNING')
+                    return self.modo_berserker_conexao()
+
+                if tentativa < tentativas_normais - 1:
                     tempo_espera = (tentativa + 1) * 5
                     self.log_detalhado(f"⏳ Aguardando {tempo_espera}s...", 'WARNING')
                     time.sleep(tempo_espera)
 
         tempo_total = time.time() - inicio_tentativas
         self.conexoes_falharam_consecutivas += 1
-        self.log_detalhado(f"🚨 Todas tentativas falharam em {tempo_total:.2f}s", 'ERROR')
-        return None
+        self.log_detalhado(f"🚨 Tentativas normais tarefas falharam em {tempo_total:.2f}s", 'ERROR')
+        self.log_detalhado("🔥 Ativando berserker tarefas como último recurso...", 'WARNING')
+
+        return self.modo_berserker_conexao()
 
     def carregar_tarefas_em_observacao(self):
         """Carrega a lista de tarefas observadas COM LOG"""
@@ -173,15 +277,16 @@ class MonitorTarefasFinalizadas:
         except Exception as e:
             self.log_detalhado(f"❌ Erro ao salvar enviadas: {e}", 'ERROR')
 
-    def buscar_novas_tarefas_pendentes(self):
-        """Pega tarefas novas COM LOGS DETALHADOS"""
+    def buscar_novas_tarefas_pendentes_resiliente(self):
+        """Busca tarefas pendentes COM MODO BERSERKER"""
         inicio_consulta = time.time()
         data_referencia = (datetime.now() - timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')
 
-        self.log_detalhado(f"🔍 Buscando tarefas pendentes desde: {data_referencia}", 'DEBUG')
+        self.log_detalhado(f"🔍 Buscando tarefas RESILIENTES desde: {data_referencia}", 'DEBUG')
 
-        conn = self.conectar_bd()
+        conn = self.conectar_bd_resiliente()
         if not conn:
+            self.log_detalhado("💀 Conexão tarefas falhou mesmo no berserker!", 'ERROR')
             return []
 
         cursor = conn.cursor()
@@ -210,29 +315,27 @@ class MonitorTarefasFinalizadas:
             cursor.close()
             conn.close()
 
-            self.log_detalhado(f"🎯 Query executada em {tempo_query:.2f}s - {len(tarefas_raw)} tarefas pendentes",
+            self.log_detalhado(f"🎯 Query tarefas resiliente em {tempo_query:.2f}s - {len(tarefas_raw)} registros",
                                'DEBUG')
 
             if not tarefas_raw:
                 tempo_total = time.time() - inicio_consulta
-                self.log_detalhado(f"📭 Nenhuma tarefa pendente nova (consulta: {tempo_total:.2f}s)", 'INFO')
+                self.log_detalhado(f"📭 Nenhuma tarefa pendente nova (resiliente: {tempo_total:.2f}s)", 'INFO')
                 self.stats_sessao['consultas_realizadas'] += 1
                 self.stats_sessao['tempo_total_consultas'] += tempo_total
                 self.ultima_consulta_sucesso = datetime.now().strftime('%H:%M:%S')
                 return []
 
-            # Log da tarefa mais recente
+            # Resto da lógica igual...
             tarefa_mais_recente = tarefas_raw[0]
             self.log_detalhado(
-                f"🆕 Tarefa pendente mais recente: #{tarefa_mais_recente[1]} (ID: {tarefa_mais_recente[0]}) criada em {tarefa_mais_recente[4]}",
-                'INFO')
+                f"🆕 Tarefa pendente mais recente: #{tarefa_mais_recente[1]} (ID: {tarefa_mais_recente[0]})", 'INFO')
 
-            # Filtra as já observadas
             ids_ja_observados = {t['id'] for t in self.tarefas_em_observacao}
             tarefas_novas = []
 
             for t in tarefas_raw:
-                if t[0] not in ids_ja_observados:  # t[0] = tarefa_id
+                if t[0] not in ids_ja_observados:
                     tarefa_dict = {
                         'tarefa_id': t[0],
                         'numero_tarefa': t[1],
@@ -242,12 +345,11 @@ class MonitorTarefasFinalizadas:
                     }
                     tarefas_novas.append(tarefa_dict)
 
-            self.log_detalhado(f"➕ {len(tarefas_novas)} tarefas realmente novas para observar", 'INFO')
+            self.log_detalhado(f"➕ {len(tarefas_novas)} tarefas realmente novas", 'INFO')
 
-            # Busca dados dos chamados se tem tarefas novas
             if tarefas_novas:
                 ids_chamados = [t['chamado_id'] for t in tarefas_novas]
-                dados_chamados = self.buscar_dados_chamados_por_id(ids_chamados)
+                dados_chamados = self.buscar_dados_chamados_por_id_resiliente(ids_chamados)
                 resultado = self.mesclar_tarefas_com_chamados(tarefas_novas, dados_chamados)
 
                 tempo_total = time.time() - inicio_consulta
@@ -265,16 +367,25 @@ class MonitorTarefasFinalizadas:
 
         except Exception as e:
             tempo_total = time.time() - inicio_consulta
-            self.log_detalhado(f"💥 Erro na busca após {tempo_total:.2f}s: {e}", 'ERROR')
+
+            if self.detectar_erro_ssl_eof(str(e)):
+                self.log_detalhado(f"🔥 SSL EOF na query tarefas! Tentando berserker...", 'WARNING')
+                cursor.close()
+                conn.close()
+                return self.buscar_novas_tarefas_pendentes_resiliente()
+
+            self.log_detalhado(f"💥 Erro busca tarefas resiliente após {tempo_total:.2f}s: {e}", 'ERROR')
+            cursor.close()
+            conn.close()
             return []
 
-    def buscar_dados_chamados_por_id(self, ids_chamados):
-        """Query separada pros dados dos chamados COM LOG"""
+    def buscar_dados_chamados_por_id_resiliente(self, ids_chamados):
+        """Busca dados dos chamados COM BERSERKER"""
         if not ids_chamados:
             return {}
 
         inicio_busca = time.time()
-        conn = self.conectar_bd()
+        conn = self.conectar_bd_resiliente()
         if not conn:
             return {}
 
@@ -298,13 +409,22 @@ class MonitorTarefasFinalizadas:
             conn.close()
 
             tempo_busca = time.time() - inicio_busca
-            self.log_detalhado(f"📊 Dados chamados obtidos em {tempo_busca:.2f}s", 'DEBUG')
+            self.log_detalhado(f"📊 Dados chamados tarefas resilientes em {tempo_busca:.2f}s", 'DEBUG')
 
             return {c[0]: {'numero_chamado': c[1], 'local': c[2], 'emergencial': c[3]} for c in chamados_raw}
 
         except Exception as e:
             tempo_busca = time.time() - inicio_busca
-            self.log_detalhado(f"💥 Erro buscar chamados após {tempo_busca:.2f}s: {e}", 'ERROR')
+
+            if self.detectar_erro_ssl_eof(str(e)):
+                self.log_detalhado(f"🔥 SSL EOF dados chamados tarefas! Berserker...", 'WARNING')
+                cursor.close()
+                conn.close()
+                return self.buscar_dados_chamados_por_id_resiliente(ids_chamados)
+
+            self.log_detalhado(f"💥 Erro buscar dados chamados tarefas após {tempo_busca:.2f}s: {e}", 'ERROR')
+            cursor.close()
+            conn.close()
             return {}
 
     def mesclar_tarefas_com_chamados(self, tarefas, dados_chamados):
@@ -331,16 +451,16 @@ class MonitorTarefasFinalizadas:
 
         return resultado
 
-    def verificar_status_tarefas_observadas(self):
-        """Verifica se tarefas mudaram pra finalizadas COM LOGS DETALHADOS"""
+    def verificar_status_tarefas_observadas_resiliente(self):
+        """Verifica status COM MODO BERSERKER"""
         if not self.tarefas_em_observacao:
-            self.log_detalhado("👀 Nenhuma tarefa em observação para verificar", 'INFO')
+            self.log_detalhado("👀 Nenhuma tarefa em observação", 'INFO')
             return []
 
         inicio_verificacao = time.time()
-        self.log_detalhado(f"🔍 Verificando status de {len(self.tarefas_em_observacao)} tarefas...", 'INFO')
+        self.log_detalhado(f"🔍 Verificando status RESILIENTE de {len(self.tarefas_em_observacao)} tarefas...", 'INFO')
 
-        conn = self.conectar_bd()
+        conn = self.conectar_bd_resiliente()
         if not conn:
             return []
 
@@ -365,18 +485,17 @@ class MonitorTarefasFinalizadas:
             cursor.close()
             conn.close()
 
-            # Separa finalizadas das pendentes
+            # Resto da lógica igual ao método original...
             ids_finalizadas = []
             tarefas_ainda_pendentes = []
             finalizadas_encontradas = 0
 
             for t in tarefas_raw:
                 if t[2] == 85:  # status_atual == 85 (finalizada)
-                    ids_finalizadas.append(t[0])  # tarefa_id
+                    ids_finalizadas.append(t[0])
                     finalizadas_encontradas += 1
                     self.log_detalhado(f"🎉 Tarefa {t[1]} FINALIZADA!", 'SUCCESS')
                 else:
-                    # Mantém na observação
                     tarefa_obs = {
                         'id': str(t[0]),
                         'numero_tarefa': t[1],
@@ -384,41 +503,46 @@ class MonitorTarefasFinalizadas:
                     }
                     tarefas_ainda_pendentes.append(tarefa_obs)
 
-            # Log do resultado da verificação
             tempo_verificacao = time.time() - inicio_verificacao
-            self.log_detalhado(f"📊 Verificação concluída em {tempo_verificacao:.2f}s:", 'INFO')
+            self.log_detalhado(f"📊 Verificação resiliente em {tempo_verificacao:.2f}s:", 'INFO')
             self.log_detalhado(f"   ✅ Finalizadas: {finalizadas_encontradas}", 'INFO')
             self.log_detalhado(f"   ⏳ Ainda pendentes: {len(tarefas_ainda_pendentes)}", 'INFO')
 
-            # Atualiza lista de observação
             self.tarefas_em_observacao = tarefas_ainda_pendentes
             self.salvar_tarefas_em_observacao()
 
-            # Busca dados completos das finalizadas
             if ids_finalizadas:
-                self.log_detalhado(f"🔍 Buscando dados completos de {len(ids_finalizadas)} tarefa(s) finalizada(s)...",
+                self.log_detalhado(f"🔍 Buscando dados completos resilientes de {len(ids_finalizadas)} finalizada(s)...",
                                    'INFO')
-                return self.buscar_dados_tarefa_finalizada_lista(ids_finalizadas)
+                return self.buscar_dados_tarefa_finalizada_lista_resiliente(ids_finalizadas)
 
             return []
 
         except Exception as e:
             tempo_verificacao = time.time() - inicio_verificacao
-            self.log_detalhado(f"💥 Erro verificação após {tempo_verificacao:.2f}s: {e}", 'ERROR')
+
+            if self.detectar_erro_ssl_eof(str(e)):
+                self.log_detalhado(f"🔥 SSL EOF verificação tarefas! Berserker...", 'WARNING')
+                cursor.close()
+                conn.close()
+                return self.verificar_status_tarefas_observadas_resiliente()
+
+            self.log_detalhado(f"💥 Erro verificação resiliente após {tempo_verificacao:.2f}s: {e}", 'ERROR')
+            cursor.close()
+            conn.close()
             return []
 
-    def buscar_dados_tarefa_finalizada_lista(self, ids_tarefas):
-        """Busca dados completos das finalizadas COM LOGS E REALIZADOR"""
+    def buscar_dados_tarefa_finalizada_lista_resiliente(self, ids_tarefas):
+        """Busca dados completos das finalizadas COM BERSERKER"""
         inicio_busca = time.time()
 
-        conn = self.conectar_bd()
+        conn = self.conectar_bd_resiliente()
         if not conn:
             return []
 
         cursor = conn.cursor()
         placeholders = ','.join(['%s'] * len(ids_tarefas))
 
-        # Query principal das tarefas
         query = f"""
         SELECT 
             T.id as tarefa_id,
@@ -438,15 +562,13 @@ class MonitorTarefasFinalizadas:
             cursor.execute(query, tuple(ids_tarefas))
             tarefas_raw = cursor.fetchall()
 
-            # Busca execuções
-            self.log_detalhado(f"🔍 Buscando execuções das tarefas finalizadas...", 'DEBUG')
-            execucoes_por_tarefa = self.buscar_execucoes_das_tarefas(cursor, ids_tarefas)
+            execucoes_por_tarefa = self.buscar_execucoes_das_tarefas_resiliente(cursor, ids_tarefas)
 
             cursor.close()
             conn.close()
 
             tempo_busca = time.time() - inicio_busca
-            self.log_detalhado(f"📊 Dados completos obtidos em {tempo_busca:.2f}s", 'SUCCESS')
+            self.log_detalhado(f"📊 Dados completos tarefas resilientes em {tempo_busca:.2f}s", 'SUCCESS')
 
             resultado = []
             for t in tarefas_raw:
@@ -459,19 +581,14 @@ class MonitorTarefasFinalizadas:
                     'realizador_nome': t[6] or 'Não informado'
                 }
 
-                # Adiciona info das execuções
                 tarefa_id = t[0]
                 if tarefa_id in execucoes_por_tarefa:
                     execucoes = execucoes_por_tarefa[tarefa_id]
                     tarefa_dict['status_maquina'] = execucoes.get('status_maquina', '')
                     tarefa_dict['descricao_atividade'] = execucoes.get('descricao_atividade', '')
-                    self.log_detalhado(
-                        f"   📋 Tarefa {t[1]}: realizador={t[6] or 'N/A'}, status_maq={execucoes.get('status_maquina', '')[:30]}...",
-                        'DEBUG')
                 else:
                     tarefa_dict['status_maquina'] = ''
                     tarefa_dict['descricao_atividade'] = ''
-                    self.log_detalhado(f"   📋 Tarefa {t[1]}: realizador={t[6] or 'N/A'}, sem execuções", 'DEBUG')
 
                 resultado.append(tarefa_dict)
 
@@ -479,11 +596,20 @@ class MonitorTarefasFinalizadas:
 
         except Exception as e:
             tempo_busca = time.time() - inicio_busca
-            self.log_detalhado(f"💥 Erro buscar finalizadas após {tempo_busca:.2f}s: {e}", 'ERROR')
+
+            if self.detectar_erro_ssl_eof(str(e)):
+                self.log_detalhado(f"🔥 SSL EOF buscar finalizadas! Berserker...", 'WARNING')
+                cursor.close()
+                conn.close()
+                return self.buscar_dados_tarefa_finalizada_lista_resiliente(ids_tarefas)
+
+            self.log_detalhado(f"💥 Erro buscar finalizadas resiliente após {tempo_busca:.2f}s: {e}", 'ERROR')
+            cursor.close()
+            conn.close()
             return []
 
-    def buscar_execucoes_das_tarefas(self, cursor, ids_tarefas):
-        """Busca execuções COM LOG"""
+    def buscar_execucoes_das_tarefas_resiliente(self, cursor, ids_tarefas):
+        """Busca execuções COM proteção SSL EOF"""
         if not ids_tarefas:
             return {}
 
@@ -503,9 +629,8 @@ class MonitorTarefasFinalizadas:
             cursor.execute(query_execucoes, tuple(ids_tarefas))
             execucoes_raw = cursor.fetchall()
 
-            self.log_detalhado(f"📝 Encontradas {len(execucoes_raw)} execuções relevantes", 'DEBUG')
+            self.log_detalhado(f"📝 Execuções resilientes: {len(execucoes_raw)}", 'DEBUG')
 
-            # Organiza por tarefa
             execucoes_organizadas = {}
 
             for exec_row in execucoes_raw:
@@ -516,7 +641,6 @@ class MonitorTarefasFinalizadas:
                 if tarefa_id not in execucoes_organizadas:
                     execucoes_organizadas[tarefa_id] = {}
 
-                # Identifica tipo de info
                 if pergunta_id == 'd00fa280-5460-4704-9278-e70e8761f700':
                     execucoes_organizadas[tarefa_id]['status_maquina'] = conteudo.strip()
                 elif pergunta_id == 'ec284022-cb0d-4cdd-a681-c3f313010504':
@@ -525,17 +649,17 @@ class MonitorTarefasFinalizadas:
             return execucoes_organizadas
 
         except Exception as e:
-            self.log_detalhado(f"💥 Erro buscar execuções: {e}", 'ERROR')
+            self.log_detalhado(f"💥 Erro buscar execuções resiliente: {e}", 'ERROR')
             return {}
 
-    def adicionar_novas_tarefas_observacao(self):
-        """Adiciona novas tarefas na observação COM LOGS DETALHADOS"""
+    def adicionar_novas_tarefas_observacao_resiliente(self):
+        """Adiciona tarefas COM BERSERKER"""
         inicio_adicao = time.time()
 
-        novas_tarefas = self.buscar_novas_tarefas_pendentes()
+        novas_tarefas = self.buscar_novas_tarefas_pendentes_resiliente()
 
         if novas_tarefas:
-            self.log_detalhado(f"➕ Adicionando {len(novas_tarefas)} nova(s) tarefa(s) na observação", 'SUCCESS')
+            self.log_detalhado(f"➕ Adicionando {len(novas_tarefas)} nova(s) tarefa(s) resiliente", 'SUCCESS')
 
             for i, tarefa in enumerate(novas_tarefas, 1):
                 tarefa_observacao = {
@@ -548,17 +672,15 @@ class MonitorTarefasFinalizadas:
                 }
 
                 self.tarefas_em_observacao.append(tarefa_observacao)
-                self.log_detalhado(
-                    f"   {i}. Tarefa {tarefa['numero_tarefa']} do chamado {tarefa['numero_chamado']} {'🚨' if tarefa['emergencial'] else ''}",
-                    'INFO')
 
             self.salvar_tarefas_em_observacao()
             self.stats_sessao['tarefas_adicionadas'] += len(novas_tarefas)
 
             tempo_adicao = time.time() - inicio_adicao
-            self.log_detalhado(f"✅ {len(novas_tarefas)} tarefa(s) adicionada(s) em {tempo_adicao:.2f}s", 'SUCCESS')
+            self.log_detalhado(f"✅ {len(novas_tarefas)} tarefa(s) resilientes adicionadas em {tempo_adicao:.2f}s",
+                               'SUCCESS')
         else:
-            self.log_detalhado("📭 Nenhuma tarefa nova para observar", 'INFO')
+            self.log_detalhado("📭 Nenhuma tarefa nova resiliente", 'INFO')
 
     def processar_tarefas_finalizadas(self, tarefas_finalizadas):
         """Processa tarefas finalizadas COM LOGS DETALHADOS"""
@@ -609,24 +731,52 @@ class MonitorTarefasFinalizadas:
 
             self.log_detalhado("=" * 60, 'SUCCESS')
 
-    def testar_conexao_rapida(self):
-        """Teste rápido de conexão"""
+    def testar_conexao_rapida_resiliente(self):
+        """Teste rápido tarefas COM detector SSL EOF"""
         try:
-            conn = self.conectar_bd(tentativas_maximas=1)
-            if conn:
-                conn.close()
-                return True
-            return False
-        except:
+            self.log_detalhado("🔍 Teste rápido tarefas...", 'DEBUG')
+
+            conn = psycopg2.connect(
+                host=self.db_config['host'],
+                database=self.db_config['database'],
+                user=self.db_config['user'],
+                password=self.db_config['password'],
+                port=self.db_config['port'],
+                connect_timeout=10,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=5,
+                keepalives_count=5,
+                sslmode='prefer'
+            )
+
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            conn.close()
+
+            self.log_detalhado("✅ Teste rápido tarefas passou!", 'SUCCESS')
+            return True
+
+        except Exception as e:
+            erro_str = str(e)
+            self.log_detalhado(f"❌ Teste rápido tarefas falhou: {erro_str[:100]}...", 'ERROR')
+
+            if self.detectar_erro_ssl_eof(erro_str):
+                self.log_detalhado("🔥 SSL EOF no teste tarefas! Berserker no próximo ciclo", 'WARNING')
+                return False
+
             return False
 
     def rodar_monitor(self):
-        """Loop principal NINJA COM CONTROLE INTELIGENTE"""
-        self.log_detalhado("🚀 MONITOR INTELIGENTE DE TAREFAS INICIANDO...", 'SUCCESS')
+        """Loop principal BERSERKER TAREFAS - Modo ninja contra SSL EOF"""
+        self.log_detalhado("🚀 MONITOR TAREFAS MODO BERSERKER INICIANDO...", 'SUCCESS')
         self.log_detalhado("🧠 Lógica: Observa tarefas pendentes até serem finalizadas", 'INFO')
         self.log_detalhado(f"🏢 Servidor: {self.db_config['host']}", 'INFO')
         self.log_detalhado(f"💽 Database: {self.db_config['database']}", 'INFO')
-        self.log_detalhado(f"🛡️ MODO RESILIENTE ATIVO!", 'SUCCESS')
+        self.log_detalhado(f"🔥 MODO BERSERKER SSL EOF DETECTOR ATIVO!", 'SUCCESS')
+        self.log_detalhado("🎯 Anti-SSL EOF: Quando rolar o erro, vai tentar até conseguir!", 'SUCCESS')
         self.log_detalhado("-" * 50, 'INFO')
 
         contador_ciclos = 0
@@ -637,49 +787,58 @@ class MonitorTarefasFinalizadas:
                 contador_ciclos += 1
                 contador_stats += 1
 
-                self.log_detalhado(f"🔄 Ciclo #{contador_ciclos} iniciado", 'INFO')
+                self.log_detalhado(f"🔄 Ciclo tarefas #{contador_ciclos} iniciado", 'INFO')
 
                 # Mostra stats a cada 15 ciclos (pra não poluir muito)
                 if contador_stats >= 15:
                     self.mostrar_stats_sessao()
                     contador_stats = 0
 
-                # Testa conexão antes de processar
-                if not self.testar_conexao_rapida():
-                    self.log_detalhado("🚨 Banco indisponível!", 'ERROR')
+                # Testa conexão COM DETECTOR SSL EOF
+                if not self.testar_conexao_rapida_resiliente():
+                    self.log_detalhado("🚨 Banco tarefas indisponível!", 'ERROR')
                     self.conexoes_falharam_consecutivas += 1
 
-                    # Intervalo inteligente baseado nas falhas
-                    if self.conexoes_falharam_consecutivas <= 3:
-                        tempo_espera = 60  # 1 minuto nas primeiras falhas
-                        self.log_detalhado(f"⏳ Primeira rodada de falhas - aguardando {tempo_espera}s...", 'WARNING')
-                    elif self.conexoes_falharam_consecutivas <= 6:
-                        tempo_espera = 120  # 2 minutos se persistir
-                        self.log_detalhado(f"⏳ Falhas persistindo - aguardando {tempo_espera}s...", 'WARNING')
+                    # Intervalos MENORES porque berserker resolve SSL EOF rapidinho
+                    if self.conexoes_falharam_consecutivas <= 2:
+                        tempo_espera = 30  # Só 30s nas primeiras falhas
+                        self.log_detalhado(
+                            f"⏳ Falha inicial tarefas - {tempo_espera}s (berserker vai ativar se for SSL EOF)...",
+                            'WARNING')
+                    elif self.conexoes_falharam_consecutivas <= 5:
+                        tempo_espera = 60  # 1 minuto se persistir
+                        self.log_detalhado(f"⏳ Persistindo tarefas - {tempo_espera}s...", 'WARNING')
                     else:
-                        tempo_espera = 300  # 5 minutos se tá muito ruim
-                        self.log_detalhado(f"🚨 Sistema muito instável - aguardando {tempo_espera}s...", 'ERROR')
+                        tempo_espera = 120  # Máximo 2 minutos (não 5!)
+                        self.log_detalhado(f"🚨 Sistema tarefas instável - {tempo_espera}s...", 'ERROR')
 
                     time.sleep(tempo_espera)
                     continue
 
                 # Reset contador se conectou
                 if self.conexoes_falharam_consecutivas > 0:
-                    self.log_detalhado(f"✅ Conexão restaurada após {self.conexoes_falharam_consecutivas} falha(s)!",
-                                       'SUCCESS')
+                    self.log_detalhado(
+                        f"✅ Conexão tarefas restaurada após {self.conexoes_falharam_consecutivas} falha(s)!", 'SUCCESS')
                     self.conexoes_falharam_consecutivas = 0
 
-                # ETAPA 1: Adiciona novas tarefas na observação
+                # ETAPA 1: Adiciona novas tarefas na observação (COM BERSERKER)
                 try:
-                    self.log_detalhado("📝 ETAPA 1: Buscando novas tarefas para observar...", 'INFO')
-                    self.adicionar_novas_tarefas_observacao()
+                    self.log_detalhado("📝 ETAPA 1 RESILIENTE: Buscando novas tarefas para observar...", 'INFO')
+                    self.adicionar_novas_tarefas_observacao_resiliente()
                 except Exception as e:
-                    self.log_detalhado(f"💥 Erro na etapa 1: {e}", 'ERROR')
+                    erro_str = str(e)
+                    self.log_detalhado(f"💥 Erro na etapa 1 tarefas: {erro_str[:100]}...", 'ERROR')
 
-                # ETAPA 2: Verifica se tarefas observadas foram finalizadas
+                    # Se for SSL EOF, não conta como falha normal
+                    if self.detectar_erro_ssl_eof(erro_str):
+                        self.log_detalhado("🔥 SSL EOF na etapa 1! Berserker já deve ter ativado", 'WARNING')
+                    else:
+                        self.conexoes_falharam_consecutivas += 1
+
+                # ETAPA 2: Verifica se tarefas observadas foram finalizadas (COM BERSERKER)
                 try:
-                    self.log_detalhado("🔍 ETAPA 2: Verificando tarefas observadas...", 'INFO')
-                    tarefas_finalizadas = self.verificar_status_tarefas_observadas()
+                    self.log_detalhado("🔍 ETAPA 2 RESILIENTE: Verificando tarefas observadas...", 'INFO')
+                    tarefas_finalizadas = self.verificar_status_tarefas_observadas_resiliente()
 
                     if tarefas_finalizadas:
                         self.log_detalhado(f"🎉 ATENÇÃO: {len(tarefas_finalizadas)} tarefa(s) FINALIZADAS!", 'SUCCESS')
@@ -689,40 +848,58 @@ class MonitorTarefasFinalizadas:
                                            'INFO')
 
                 except Exception as e:
-                    self.log_detalhado(f"💥 Erro na etapa 2: {e}", 'ERROR')
+                    erro_str = str(e)
+                    self.log_detalhado(f"💥 Erro na etapa 2 tarefas: {erro_str[:100]}...", 'ERROR')
 
-                # Intervalo inteligente baseado na performance
+                    # Se for SSL EOF, não conta como falha normal
+                    if self.detectar_erro_ssl_eof(erro_str):
+                        self.log_detalhado("🔥 SSL EOF na etapa 2! Berserker já deve ter ativado", 'WARNING')
+                    else:
+                        self.conexoes_falharam_consecutivas += 1
+
+                # Intervalo INTELIGENTE baseado na performance
                 if self.stats_sessao['consultas_realizadas'] > 0:
                     tempo_medio = self.stats_sessao['tempo_total_consultas'] / self.stats_sessao['consultas_realizadas']
 
-                    # Ajusta intervalo conforme performance
-                    if tempo_medio > 10:  # Sistema lento
-                        intervalo = 180  # 3 minutos
-                        self.log_detalhado(f"🐌 Sistema lento (média: {tempo_medio:.1f}s) - intervalo 3min", 'WARNING')
-                    elif tempo_medio > 5:  # Sistema médio
+                    # Intervalos menores porque berserker resolve SSL EOF rapidinho
+                    if tempo_medio > 15:  # Sistema muito lento
                         intervalo = 150  # 2.5 minutos
-                        self.log_detalhado(f"⚡ Sistema médio (média: {tempo_medio:.1f}s) - intervalo 2.5min", 'INFO')
-                    else:  # Sistema rápido
+                        self.log_detalhado(f"🐌 Sistema tarefas lento (média: {tempo_medio:.1f}s) - intervalo 2.5min",
+                                           'WARNING')
+                    elif tempo_medio > 8:  # Sistema médio
                         intervalo = 120  # 2 minutos
-                        self.log_detalhado(f"🚀 Sistema rápido (média: {tempo_medio:.1f}s) - intervalo 2min", 'SUCCESS')
+                        self.log_detalhado(f"⚡ Sistema tarefas médio (média: {tempo_medio:.1f}s) - intervalo 2min",
+                                           'INFO')
+                    else:  # Sistema rápido
+                        intervalo = 90  # 1.5 minutos (mais agressivo!)
+                        self.log_detalhado(f"🚀 Sistema tarefas rápido (média: {tempo_medio:.1f}s) - intervalo 1.5min",
+                                           'SUCCESS')
                 else:
                     intervalo = 120  # Default
 
-                self.log_detalhado(f"😴 Dormindo por {intervalo}s...", 'INFO')
+                self.log_detalhado(f"😴 Tarefas dormindo por {intervalo}s...", 'INFO')
                 time.sleep(intervalo)
 
             except KeyboardInterrupt:
-                self.log_detalhado("\n👋 Monitor parado pelo usuário (Ctrl+C)", 'INFO')
+                self.log_detalhado("\n👋 Monitor tarefas parado pelo usuário (Ctrl+C)", 'INFO')
                 self.mostrar_stats_sessao()
                 break
 
             except Exception as e:
-                self.log_detalhado(f"💥 Erro inesperado: {e}", 'ERROR')
-                self.conexoes_falharam_consecutivas += 1
-                tempo_espera = min(60 * self.conexoes_falharam_consecutivas, 300)
-                self.log_detalhado(f"⏳ Recuperando em {tempo_espera}s...", 'WARNING')
-                time.sleep(tempo_espera)
+                erro_str = str(e)
+                self.log_detalhado(f"💥 Erro inesperado tarefas: {erro_str[:100]}...", 'ERROR')
 
+                # Se for SSL EOF, recuperação SUPER RÁPIDA
+                if self.detectar_erro_ssl_eof(erro_str):
+                    self.log_detalhado("🔥 SSL EOF no loop principal tarefas! Recuperação rápida...", 'WARNING')
+                    tempo_espera = 30  # Só 30s para SSL EOF
+                else:
+                    # Outros erros, recuperação normal
+                    self.conexoes_falharam_consecutivas += 1
+                    tempo_espera = min(60 * self.conexoes_falharam_consecutivas, 180)  # Máximo 3min
+
+                self.log_detalhado(f"⏳ Tarefas recuperando em {tempo_espera}s...", 'WARNING')
+                time.sleep(tempo_espera)
 
 # Teste direto
 if __name__ == "__main__":
